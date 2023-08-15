@@ -119,12 +119,12 @@ func main() {
 
 	ctx := context.Background()
 	err = wait.PollUntilContextTimeout(ctx, 5*time.Second, 5*time.Minute, true, func(ctx context.Context) (bool, error) {
-		ldapUser, err := dynClient.Resource(diskGVR).Namespace("default").Get(ctx, "demo", metav1.GetOptions{})
+		vdisk, err := dynClient.Resource(diskGVR).Namespace("default").Get(ctx, "demo", metav1.GetOptions{})
 		if err != nil {
 			return true, err
 		}
 
-		phase, ok, err := unstructured.NestedString(ldapUser.Object, "status", "phase")
+		phase, ok, err := unstructured.NestedString(vdisk.Object, "status", "phase")
 		if err != nil {
 			return false, err
 		}
@@ -158,15 +158,11 @@ func main() {
 			return false, err
 		}
 
-		if job.Status.Succeeded > 0 {
-			return true, nil
-		}
-
 		if job.Status.Failed > 0 {
 			return false, fmt.Errorf("block device not found")
 		}
 
-		return false, nil
+		return job.Status.Succeeded > 0, nil
 	})
 	if err != nil {
 		logger.Fatal(red("Checking for virtual disk block device failed"), zap.Error(err))
