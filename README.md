@@ -19,3 +19,7 @@ kapp deploy -a virt-disk-operator -f https://github.com/gpu-ninja/virt-disk-oper
 ```shell
 kubectl apply -f examples
 ```
+
+## Credits
+
+* [go-nbd](https://github.com/pojntfx/go-nbd)

@@ -12,7 +12,7 @@ KBLD ?= $(LOCALBIN)/kbld
 SRCS := $(shell find . -type f -name '*.go' -not -path "./vendor/*")
 
 $(LOCALBIN)/manager: $(SRCS) $(LOCALBIN)
-	CGO_ENABLED=0 go build -ldflags '-s' -o $@ cmd/main.go
+	go build -ldflags '-s' -o $@ cmd/main.go
 
 generate: $(CONTROLLER_GEN)
 	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./..."

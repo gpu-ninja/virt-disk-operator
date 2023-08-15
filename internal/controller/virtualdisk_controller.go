@@ -348,16 +348,17 @@ func (r *VirtualDiskReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-func (r *VirtualDiskReconciler) markPending(ctx context.Context, disk *virtdiskv1alpha1.VirtualDisk) error {
-	_, err := controllerutil.CreateOrPatch(ctx, r.Client, disk, func() error {
-		disk.Status.ObservedGeneration = disk.Generation
-		disk.Status.Phase = virtdiskv1alpha1.VirtualDiskPhasePending
+func (r *VirtualDiskReconciler) markPending(ctx context.Context, vdisk *virtdiskv1alpha1.VirtualDisk) error {
+	_, err := controllerutil.CreateOrPatch(ctx, r.Client, vdisk, func() error {
+		vdisk.Status.ObservedGeneration = vdisk.Generation
+		vdisk.Status.Phase = virtdiskv1alpha1.VirtualDiskPhasePending
 
-		meta.SetStatusCondition(&disk.Status.Conditions, metav1.Condition{
-			Type:    string(virtdiskv1alpha1.VirtualDiskConditionTypePending),
-			Status:  metav1.ConditionTrue,
-			Reason:  "Pending",
-			Message: "virtual disk device is pending",
+		meta.SetStatusCondition(&vdisk.Status.Conditions, metav1.Condition{
+			Type:               string(virtdiskv1alpha1.VirtualDiskConditionTypePending),
+			Status:             metav1.ConditionTrue,
+			ObservedGeneration: vdisk.Generation,
+			Reason:             "Pending",
+			Message:            "virtual disk device is pending",
 		})
 
 		return nil
@@ -375,10 +376,11 @@ func (r *VirtualDiskReconciler) markReady(ctx context.Context, vdisk *virtdiskv1
 		vdisk.Status.Phase = virtdiskv1alpha1.VirtualDiskPhaseReady
 
 		meta.SetStatusCondition(&vdisk.Status.Conditions, metav1.Condition{
-			Type:    string(virtdiskv1alpha1.VirtualDiskConditionTypeReady),
-			Status:  metav1.ConditionTrue,
-			Reason:  "Ready",
-			Message: "virtual disk device is ready",
+			Type:               string(virtdiskv1alpha1.VirtualDiskConditionTypeReady),
+			Status:             metav1.ConditionTrue,
+			ObservedGeneration: vdisk.Generation,
+			Reason:             "Ready",
+			Message:            "virtual disk device is ready",
 		})
 
 		return nil
@@ -398,10 +400,11 @@ func (r *VirtualDiskReconciler) markFailed(ctx context.Context, vdisk *virtdiskv
 		vdisk.Status.Phase = virtdiskv1alpha1.VirtualDiskPhaseFailed
 
 		meta.SetStatusCondition(&vdisk.Status.Conditions, metav1.Condition{
-			Type:    string(virtdiskv1alpha1.VirtualDiskConditionTypeFailed),
-			Status:  metav1.ConditionTrue,
-			Reason:  "Failed",
-			Message: err.Error(),
+			Type:               string(virtdiskv1alpha1.VirtualDiskConditionTypeFailed),
+			Status:             metav1.ConditionTrue,
+			ObservedGeneration: vdisk.Generation,
+			Reason:             "Failed",
+			Message:            err.Error(),
 		})
 
 		return nil
