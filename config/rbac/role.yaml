@@ -1,0 +1,63 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: virt-disk-manager-role
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - daemonsets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - virt-disk.gpu-ninja.com
+  resources:
+  - virtualdisks
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - virt-disk.gpu-ninja.com
+  resources:
+  - virtualdisks/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - virt-disk.gpu-ninja.com
+  resources:
+  - virtualdisks/status
+  verbs:
+  - get
+  - patch
+  - update
