@@ -117,7 +117,7 @@ func (r *VirtualDiskReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	if vdisk.Status.Phase == virtdiskv1alpha1.VirtualDiskPhaseFailed {
-		logger.Info("virtual disk device is in failed state, ignoring")
+		logger.Info("Virtual disk device is in failed state, ignoring")
 
 		return ctrl.Result{}, nil
 	}
@@ -358,7 +358,7 @@ func (r *VirtualDiskReconciler) markPending(ctx context.Context, vdisk *virtdisk
 			Status:             metav1.ConditionTrue,
 			ObservedGeneration: vdisk.Generation,
 			Reason:             "Pending",
-			Message:            "virtual disk device is pending",
+			Message:            "Virtual disk device is pending",
 		})
 
 		return nil
@@ -380,7 +380,7 @@ func (r *VirtualDiskReconciler) markReady(ctx context.Context, vdisk *virtdiskv1
 			Status:             metav1.ConditionTrue,
 			ObservedGeneration: vdisk.Generation,
 			Reason:             "Ready",
-			Message:            "virtual disk device is ready",
+			Message:            "Virtual disk device is ready",
 		})
 
 		return nil
