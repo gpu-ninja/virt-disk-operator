@@ -23,13 +23,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
-	"dario.cat/mergo"
 	"go.uber.org/zap"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
@@ -38,9 +37,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	"github.com/docker/go-units"
+	"github.com/gpu-ninja/operator-utils/updater"
 	"github.com/gpu-ninja/operator-utils/zaplogr"
 	virtdiskv1alpha1 "github.com/gpu-ninja/virt-disk-operator/api/v1alpha1"
-	"github.com/gpu-ninja/virt-disk-operator/internal/constants"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -60,14 +59,20 @@ import (
 // +kubebuilder:rbac:groups=virt-disk.gpu-ninja.com,resources=virtualdisks/finalizers,verbs=update
 
 const (
+	// FinalizerName is the name of the finalizer used by controllers.
+	FinalizerName = "virt-disk.gpu-ninja.com/finalizer"
+	// reconcileRetryInterval is the interval at which the controller will retry
+	// to reconcile a resource
+	reconcileRetryInterval = 5 * time.Second
+	// defaultOperatorImage is the default image to use for the virt disk daemonset.
 	defaultOperatorImage = "ghcr.io/gpu-ninja/virt-disk-operator:latest"
 )
 
 // VirtualDiskReconciler reconciles a VirtualDisk object
 type VirtualDiskReconciler struct {
 	client.Client
-	Scheme        *runtime.Scheme
-	EventRecorder record.EventRecorder
+	Scheme   *runtime.Scheme
+	Recorder record.EventRecorder
 }
 
 func (r *VirtualDiskReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -84,11 +89,11 @@ func (r *VirtualDiskReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 
-	if !controllerutil.ContainsFinalizer(&vdisk, constants.FinalizerName) {
+	if !controllerutil.ContainsFinalizer(&vdisk, FinalizerName) {
 		logger.Info("Adding Finalizer")
 
 		_, err := controllerutil.CreateOrPatch(ctx, r.Client, &vdisk, func() error {
-			controllerutil.AddFinalizer(&vdisk, constants.FinalizerName)
+			controllerutil.AddFinalizer(&vdisk, FinalizerName)
 
 			return nil
 		})
@@ -100,11 +105,11 @@ func (r *VirtualDiskReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	if !vdisk.ObjectMeta.DeletionTimestamp.IsZero() {
 		logger.Info("Deleting")
 
-		if controllerutil.ContainsFinalizer(&vdisk, constants.FinalizerName) {
+		if controllerutil.ContainsFinalizer(&vdisk, FinalizerName) {
 			logger.Info("Removing Finalizer")
 
 			_, err := controllerutil.CreateOrPatch(ctx, r.Client, &vdisk, func() error {
-				controllerutil.RemoveFinalizer(&vdisk, constants.FinalizerName)
+				controllerutil.RemoveFinalizer(&vdisk, FinalizerName)
 
 				return nil
 			})
@@ -112,12 +117,6 @@ func (r *VirtualDiskReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 				return ctrl.Result{}, fmt.Errorf("failed to remove finalizer: %w", err)
 			}
 		}
-
-		return ctrl.Result{}, nil
-	}
-
-	if vdisk.Status.Phase == virtdiskv1alpha1.VirtualDiskPhaseFailed {
-		logger.Info("Virtual disk device is in failed state, ignoring")
 
 		return ctrl.Result{}, nil
 	}
@@ -131,97 +130,245 @@ func (r *VirtualDiskReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, fmt.Errorf("failed to get operator image: %w", err)
 	}
 
-	dsNamespaceName := types.NamespacedName{Name: vdisk.Name, Namespace: vdisk.Namespace}
-	ds := appsv1.DaemonSet{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      dsNamespaceName.Name,
-			Namespace: dsNamespaceName.Namespace,
-		},
+	logger.Info("Reconciling daemonset")
+
+	ds, err := r.daemonSetTemplate(&vdisk, image)
+	if err != nil {
+		r.Recorder.Eventf(&vdisk, corev1.EventTypeWarning,
+			"Failed", "Failed to generate daemonset template: %s", err)
+
+		r.markFailed(ctx, &vdisk,
+			fmt.Errorf("failed to generate daemonset template: %w", err))
+
+		return ctrl.Result{}, fmt.Errorf("failed to generate daemonset template: %w", err)
 	}
 
-	var creating bool
-	if err := r.Get(ctx, dsNamespaceName, &ds); err != nil && errors.IsNotFound(err) {
-		creating = true
+	if _, err := updater.CreateOrUpdateFromTemplate(ctx, r.Client, ds); err != nil {
+		r.Recorder.Eventf(&vdisk, corev1.EventTypeWarning,
+			"Failed", "Failed to reconcile daemonset: %s", err)
+
+		r.markFailed(ctx, &vdisk,
+			fmt.Errorf("failed to reconcile daemonset: %w", err))
+
+		return ctrl.Result{}, fmt.Errorf("failed to reconcile daemonset: %w", err)
 	}
 
-	opResult, err := controllerutil.CreateOrPatch(ctx, r.Client, &ds, func() error {
-		if err := controllerutil.SetControllerReference(&vdisk, &ds, r.Scheme); err != nil {
-			return fmt.Errorf("failed to set owner reference: %w", err)
+	logger.Info("Daemonset successfully reconciled")
+
+	ready, err := r.isDaemonSetReady(ctx, &vdisk)
+	if err != nil {
+		r.Recorder.Eventf(&vdisk, corev1.EventTypeWarning,
+			"Failed", "Failed to check if daemonset is ready: %s", err)
+
+		r.markFailed(ctx, &vdisk,
+			fmt.Errorf("failed to check if daemonset is ready: %w", err))
+
+		return ctrl.Result{}, fmt.Errorf("failed to check if daemonset is ready: %w", err)
+	}
+
+	if !ready {
+		logger.Info("Waiting for daemonset to become ready")
+
+		r.Recorder.Event(&vdisk, corev1.EventTypeNormal,
+			"Pending", "Waiting for daemonset to become ready")
+
+		if err := r.markPending(ctx, &vdisk); err != nil {
+			return ctrl.Result{}, err
 		}
 
-		initContainers := []corev1.Container{{
-			Name:  "load-nbd-module",
-			Image: image,
-			Command: []string{
-				"/sbin/modprobe",
-			},
+		return ctrl.Result{RequeueAfter: reconcileRetryInterval}, nil
+	}
+
+	if vdisk.Status.Phase != virtdiskv1alpha1.VirtualDiskPhaseReady {
+		r.Recorder.Event(&vdisk, corev1.EventTypeNormal,
+			"Created", "Successfully created")
+
+		if err := r.markReady(ctx, &vdisk); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	return ctrl.Result{}, nil
+}
+
+func (r *VirtualDiskReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	return ctrl.NewControllerManagedBy(mgr).
+		For(&virtdiskv1alpha1.VirtualDisk{}).
+		Owns(&appsv1.DaemonSet{}).
+		Complete(r)
+}
+
+func (r *VirtualDiskReconciler) markPending(ctx context.Context, vdisk *virtdiskv1alpha1.VirtualDisk) error {
+	key := client.ObjectKeyFromObject(vdisk)
+	err := updater.UpdateStatus(ctx, r.Client, key, vdisk, func() error {
+		vdisk.Status.ObservedGeneration = vdisk.ObjectMeta.Generation
+		vdisk.Status.Phase = virtdiskv1alpha1.VirtualDiskPhasePending
+
+		meta.SetStatusCondition(&vdisk.Status.Conditions, metav1.Condition{
+			Type:               string(virtdiskv1alpha1.VirtualDiskConditionTypePending),
+			Status:             metav1.ConditionTrue,
+			ObservedGeneration: vdisk.ObjectMeta.Generation,
+			Reason:             "Pending",
+			Message:            "Virtual disk device is pending",
+		})
+
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("failed to mark as pending: %w", err)
+	}
+
+	return nil
+}
+
+func (r *VirtualDiskReconciler) markReady(ctx context.Context, vdisk *virtdiskv1alpha1.VirtualDisk) error {
+	key := client.ObjectKeyFromObject(vdisk)
+	err := updater.UpdateStatus(ctx, r.Client, key, vdisk, func() error {
+		vdisk.Status.ObservedGeneration = vdisk.ObjectMeta.Generation
+		vdisk.Status.Phase = virtdiskv1alpha1.VirtualDiskPhaseReady
+
+		meta.SetStatusCondition(&vdisk.Status.Conditions, metav1.Condition{
+			Type:               string(virtdiskv1alpha1.VirtualDiskConditionTypeReady),
+			Status:             metav1.ConditionTrue,
+			ObservedGeneration: vdisk.ObjectMeta.Generation,
+			Reason:             "Ready",
+			Message:            "Virtual disk device is ready",
+		})
+
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("failed to mark as ready: %w", err)
+	}
+
+	return nil
+}
+
+func (r *VirtualDiskReconciler) markFailed(ctx context.Context, vdisk *virtdiskv1alpha1.VirtualDisk, err error) {
+	logger := zaplogr.FromContext(ctx)
+
+	key := client.ObjectKeyFromObject(vdisk)
+	updateErr := updater.UpdateStatus(ctx, r.Client, key, vdisk, func() error {
+		vdisk.Status.ObservedGeneration = vdisk.ObjectMeta.Generation
+		vdisk.Status.Phase = virtdiskv1alpha1.VirtualDiskPhaseFailed
+
+		meta.SetStatusCondition(&vdisk.Status.Conditions, metav1.Condition{
+			Type:               string(virtdiskv1alpha1.VirtualDiskConditionTypeFailed),
+			Status:             metav1.ConditionTrue,
+			ObservedGeneration: vdisk.ObjectMeta.Generation,
+			Reason:             "Failed",
+			Message:            err.Error(),
+		})
+
+		return nil
+	})
+	if updateErr != nil {
+		logger.Error("Failed to mark as failed", zap.Error(updateErr))
+	}
+}
+
+func (r *VirtualDiskReconciler) getOperatorImage(ctx context.Context) (string, error) {
+	logger := zaplogr.FromContext(ctx)
+
+	podName, ok := os.LookupEnv("POD_NAME")
+	if !ok {
+		logger.Warn("Running outside of cluster, \"POD_NAME\" is not set, using default image")
+
+		return defaultOperatorImage, nil
+	}
+
+	podNamespace, ok := os.LookupEnv("POD_NAMESPACE")
+	if !ok {
+		logger.Warn("Running outside of cluster, \"POD_NAMESPACE\" is not set, using default image")
+
+		return defaultOperatorImage, nil
+	}
+
+	var pod corev1.Pod
+	if err := r.Get(ctx, client.ObjectKey{
+		Name:      podName,
+		Namespace: podNamespace,
+	}, &pod); err != nil {
+		return "", err
+	}
+
+	if len(pod.Spec.Containers) == 0 {
+		return "", fmt.Errorf("no containers found in the operator pod")
+	}
+
+	return pod.Spec.Containers[0].Image, nil
+}
+
+func (r *VirtualDiskReconciler) daemonSetTemplate(vdisk *virtdiskv1alpha1.VirtualDisk, image string) (*appsv1.DaemonSet, error) {
+	initContainers := []corev1.Container{{
+		Name:  "load-nbd-module",
+		Image: image,
+		Command: []string{
+			"/sbin/modprobe",
+		},
+		Args: []string{
+			"nbd",
+		},
+		SecurityContext: &corev1.SecurityContext{
+			Privileged: ptr.To(true),
+		},
+		VolumeMounts: []corev1.VolumeMount{{
+			Name:      "modules",
+			MountPath: "/lib/modules",
+			ReadOnly:  true,
+		}},
+	}}
+
+	args := []string{
+		"mount",
+		"--image=" + filepath.Join(vdisk.Spec.HostPath, fmt.Sprintf("%s-%s.qcow2", vdisk.Namespace, vdisk.Name)),
+		"--size=" + units.BytesSize(float64(vdisk.Spec.Size.Value())),
+	}
+
+	if vdisk.Spec.LVM != nil {
+		initContainers = append(initContainers, corev1.Container{
+			Name:    "clean-up-orphaned-device",
+			Image:   image,
+			Command: []string{"/bin/sh"},
 			Args: []string{
-				"nbd",
+				"-c",
+				"[ -d $DEV ] && /sbin/dmsetup remove $DEV || true",
 			},
+			Env: []corev1.EnvVar{{
+				Name:  "DEV",
+				Value: toDevMapperPath(vdisk.Spec.LVM),
+			}},
 			SecurityContext: &corev1.SecurityContext{
 				Privileged: ptr.To(true),
 			},
 			VolumeMounts: []corev1.VolumeMount{{
-				Name:      "modules",
-				MountPath: "/lib/modules",
-				ReadOnly:  true,
+				Name:      "dev",
+				MountPath: "/dev",
 			}},
-		}}
+		})
 
-		args := []string{
-			"mount",
-			"--image=" + filepath.Join(vdisk.Spec.HostPath, fmt.Sprintf("%s-%s.qcow2", vdisk.Namespace, vdisk.Name)),
-			"--size=" + units.BytesSize(float64(vdisk.Spec.Size.Value())),
-		}
+		args = append(args, "--lv="+vdisk.Spec.LVM.LogicalVolume, "--vg="+vdisk.Spec.LVM.VolumeGroup)
+	}
 
-		if vdisk.Spec.LVM != nil {
-			initContainers = append(initContainers, corev1.Container{
-				Name:    "clean-up-orphaned-device",
-				Image:   image,
-				Command: []string{"/bin/sh"},
-				Args: []string{
-					"-c",
-					"[ -d $DEV ] && /sbin/dmsetup remove $DEV || true",
-				},
-				Env: []corev1.EnvVar{{
-					Name:  "DEV",
-					Value: toDevMapperPath(vdisk.Spec.LVM),
-				}},
-				SecurityContext: &corev1.SecurityContext{
-					Privileged: ptr.To(true),
-				},
-				VolumeMounts: []corev1.VolumeMount{{
-					Name:      "dev",
-					MountPath: "/dev",
-				}},
-			})
-
-			args = append(args, "--lv="+vdisk.Spec.LVM.LogicalVolume, "--vg="+vdisk.Spec.LVM.VolumeGroup)
-		}
-
-		if vdisk.ObjectMeta.Labels == nil {
-			vdisk.ObjectMeta.Labels = make(map[string]string)
-		}
-
-		for k, v := range vdisk.ObjectMeta.Labels {
-			vdisk.ObjectMeta.Labels[k] = v
-		}
-
-		vdisk.ObjectMeta.Labels["app.kubernetes.io/name"] = "virt-disk"
-		vdisk.ObjectMeta.Labels["app.kubernetes.io/component"] = "virt-disk"
-		vdisk.ObjectMeta.Labels["app.kubernetes.io/instance"] = vdisk.Name
-
-		spec := appsv1.DaemonSetSpec{
+	ds := appsv1.DaemonSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      vdisk.Name,
+			Namespace: vdisk.Namespace,
+			Labels:    make(map[string]string),
+		},
+		Spec: appsv1.DaemonSetSpec{
 			Selector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{
-					"app.kubernetes.io/name":      "virt-disk",
-					"app.kubernetes.io/component": "virt-disk",
-					"app.kubernetes.io/instance":  vdisk.Name,
+					"app.kubernetes.io/name":     "virt-disk",
+					"app.kubernetes.io/instance": vdisk.Name,
 				},
 			},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels: vdisk.ObjectMeta.Labels,
+					Labels: map[string]string{
+						"app.kubernetes.io/name":     "virt-disk",
+						"app.kubernetes.io/instance": vdisk.Name,
+					},
 				},
 				Spec: corev1.PodSpec{
 					TerminationGracePeriodSeconds: ptr.To(int64(10)),
@@ -287,163 +434,38 @@ func (r *VirtualDiskReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 					}},
 				},
 			},
-		}
-
-		if creating {
-			ds.Spec = spec
-		} else if err := mergo.Merge(&ds.Spec, spec, mergo.WithOverride, mergo.WithSliceDeepCopy); err != nil {
-			return fmt.Errorf("failed to merge spec: %w", err)
-		}
-
-		return nil
-	})
-	if err != nil {
-		logger.Error("Failed to reconcile daemonset", zap.Error(err))
-
-		r.EventRecorder.Eventf(&vdisk, corev1.EventTypeWarning,
-			"Failed", "Failed to reconcile daemonset: %s", err)
-
-		r.markFailed(ctx, &vdisk,
-			fmt.Errorf("failed to reconcile daemonset: %w", err))
-
-		return ctrl.Result{}, nil
+		},
 	}
 
-	if opResult != controllerutil.OperationResultNone {
-		logger.Info("DaemonSet successfully reconciled, marking as pending",
-			zap.String("operation", string(opResult)))
-
-		if err := r.markPending(ctx, &vdisk); err != nil {
-			return ctrl.Result{}, err
-		}
+	if err := controllerutil.SetOwnerReference(vdisk, &ds, r.Scheme); err != nil {
+		return nil, fmt.Errorf("failed to set owner reference: %w", err)
 	}
 
-	if ds.Status.DesiredNumberScheduled == 0 || ds.Status.NumberReady != ds.Status.DesiredNumberScheduled {
-		r.EventRecorder.Event(&vdisk, corev1.EventTypeNormal,
-			"Pending", "Waiting for daemonset pods to be ready")
-
-		if err := r.markPending(ctx, &vdisk); err != nil {
-			return ctrl.Result{}, err
-		}
-
-		return ctrl.Result{RequeueAfter: constants.ReconcileRetryInterval}, nil
+	for k, v := range vdisk.ObjectMeta.Labels {
+		ds.ObjectMeta.Labels[k] = v
 	}
 
-	if vdisk.Status.Phase != virtdiskv1alpha1.VirtualDiskPhaseReady {
-		r.EventRecorder.Event(&vdisk, corev1.EventTypeNormal,
-			"Created", "Successfully created")
+	ds.ObjectMeta.Labels["app.kubernetes.io/name"] = "virt-disk"
+	ds.ObjectMeta.Labels["app.kubernetes.io/managed-by"] = "virt-disk-operator"
+	ds.ObjectMeta.Labels["app.kubernetes.io/instance"] = vdisk.Name
 
-		if err := r.markReady(ctx, &vdisk); err != nil {
-			return ctrl.Result{}, err
-		}
-	}
-
-	return ctrl.Result{}, nil
+	return &ds, nil
 }
 
-func (r *VirtualDiskReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
-		For(&virtdiskv1alpha1.VirtualDisk{}).
-		Owns(&appsv1.DaemonSet{}).
-		Complete(r)
-}
-
-func (r *VirtualDiskReconciler) markPending(ctx context.Context, vdisk *virtdiskv1alpha1.VirtualDisk) error {
-	_, err := controllerutil.CreateOrPatch(ctx, r.Client, vdisk, func() error {
-		vdisk.Status.ObservedGeneration = vdisk.Generation
-		vdisk.Status.Phase = virtdiskv1alpha1.VirtualDiskPhasePending
-
-		meta.SetStatusCondition(&vdisk.Status.Conditions, metav1.Condition{
-			Type:               string(virtdiskv1alpha1.VirtualDiskConditionTypePending),
-			Status:             metav1.ConditionTrue,
-			ObservedGeneration: vdisk.Generation,
-			Reason:             "Pending",
-			Message:            "Virtual disk device is pending",
-		})
-
-		return nil
-	})
-	if err != nil {
-		return fmt.Errorf("failed to mark as pending: %w", err)
+func (r *VirtualDiskReconciler) isDaemonSetReady(ctx context.Context, vdisk *virtdiskv1alpha1.VirtualDisk) (bool, error) {
+	ds := appsv1.DaemonSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      vdisk.Name,
+			Namespace: vdisk.Namespace,
+		},
 	}
 
-	return nil
-}
-
-func (r *VirtualDiskReconciler) markReady(ctx context.Context, vdisk *virtdiskv1alpha1.VirtualDisk) error {
-	_, err := controllerutil.CreateOrPatch(ctx, r.Client, vdisk, func() error {
-		vdisk.Status.ObservedGeneration = vdisk.Generation
-		vdisk.Status.Phase = virtdiskv1alpha1.VirtualDiskPhaseReady
-
-		meta.SetStatusCondition(&vdisk.Status.Conditions, metav1.Condition{
-			Type:               string(virtdiskv1alpha1.VirtualDiskConditionTypeReady),
-			Status:             metav1.ConditionTrue,
-			ObservedGeneration: vdisk.Generation,
-			Reason:             "Ready",
-			Message:            "Virtual disk device is ready",
-		})
-
-		return nil
-	})
-	if err != nil {
-		return fmt.Errorf("failed to mark as ready: %w", err)
+	if err := r.Get(ctx, client.ObjectKeyFromObject(&ds), &ds); err != nil {
+		return false, fmt.Errorf("failed to get daemonset: %w", err)
 	}
 
-	return nil
-}
-
-func (r *VirtualDiskReconciler) markFailed(ctx context.Context, vdisk *virtdiskv1alpha1.VirtualDisk, err error) {
-	logger := zaplogr.FromContext(ctx)
-
-	_, updateErr := controllerutil.CreateOrPatch(ctx, r.Client, vdisk, func() error {
-		vdisk.Status.ObservedGeneration = vdisk.Generation
-		vdisk.Status.Phase = virtdiskv1alpha1.VirtualDiskPhaseFailed
-
-		meta.SetStatusCondition(&vdisk.Status.Conditions, metav1.Condition{
-			Type:               string(virtdiskv1alpha1.VirtualDiskConditionTypeFailed),
-			Status:             metav1.ConditionTrue,
-			ObservedGeneration: vdisk.Generation,
-			Reason:             "Failed",
-			Message:            err.Error(),
-		})
-
-		return nil
-	})
-	if updateErr != nil {
-		logger.Error("Failed to mark as failed", zap.Error(updateErr))
-	}
-}
-
-func (r *VirtualDiskReconciler) getOperatorImage(ctx context.Context) (string, error) {
-	logger := zaplogr.FromContext(ctx)
-
-	podName, ok := os.LookupEnv("POD_NAME")
-	if !ok {
-		logger.Warn("Running outside of cluster, \"POD_NAME\" is not set, using default image")
-
-		return defaultOperatorImage, nil
-	}
-
-	podNamespace, ok := os.LookupEnv("POD_NAMESPACE")
-	if !ok {
-		logger.Warn("Running outside of cluster, \"POD_NAMESPACE\" is not set, using default image")
-
-		return defaultOperatorImage, nil
-	}
-
-	var pod corev1.Pod
-	if err := r.Get(ctx, client.ObjectKey{
-		Name:      podName,
-		Namespace: podNamespace,
-	}, &pod); err != nil {
-		return "", err
-	}
-
-	if len(pod.Spec.Containers) == 0 {
-		return "", fmt.Errorf("no containers found in the operator pod")
-	}
-
-	return pod.Spec.Containers[0].Image, nil
+	return ds.Status.DesiredNumberScheduled != 0 &&
+		ds.Status.NumberReady == ds.Status.DesiredNumberScheduled, nil
 }
 
 func toDevMapperPath(lvm *virtdiskv1alpha1.VirtualDiskLVMSpec) string {

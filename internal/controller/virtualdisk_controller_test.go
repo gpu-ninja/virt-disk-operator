@@ -27,7 +27,6 @@ import (
 	fakeutils "github.com/gpu-ninja/operator-utils/fake"
 	"github.com/gpu-ninja/operator-utils/zaplogr"
 	virtdiskv1alpha1 "github.com/gpu-ninja/virt-disk-operator/api/v1alpha1"
-	"github.com/gpu-ninja/virt-disk-operator/internal/constants"
 	"github.com/gpu-ninja/virt-disk-operator/internal/controller"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -107,7 +106,7 @@ func TestVirtualDiskReconciler(t *testing.T) {
 
 	t.Run("Create or Update", func(t *testing.T) {
 		eventRecorder := record.NewFakeRecorder(2)
-		r.EventRecorder = eventRecorder
+		r.Recorder = eventRecorder
 
 		subResourceClient.Reset()
 
@@ -129,7 +128,7 @@ func TestVirtualDiskReconciler(t *testing.T) {
 
 		require.Len(t, eventRecorder.Events, 1)
 		event := <-eventRecorder.Events
-		assert.Equal(t, "Normal Pending Waiting for daemonset pods to be ready", event)
+		assert.Equal(t, "Normal Pending Waiting for daemonset to become ready", event)
 
 		updatedVDisk := vdisk.DeepCopy()
 		err = subResourceClient.Get(ctx, &vdisk, updatedVDisk)
@@ -180,10 +179,10 @@ func TestVirtualDiskReconciler(t *testing.T) {
 	t.Run("Delete", func(t *testing.T) {
 		deletingVDisk := vdisk.DeepCopy()
 		deletingVDisk.DeletionTimestamp = &metav1.Time{Time: metav1.Now().Add(-1 * time.Second)}
-		deletingVDisk.Finalizers = []string{constants.FinalizerName}
+		deletingVDisk.Finalizers = []string{controller.FinalizerName}
 
 		eventRecorder := record.NewFakeRecorder(2)
-		r.EventRecorder = eventRecorder
+		r.Recorder = eventRecorder
 
 		r.Client = fake.NewClientBuilder().
 			WithScheme(scheme).
@@ -205,7 +204,7 @@ func TestVirtualDiskReconciler(t *testing.T) {
 
 	t.Run("Failure", func(t *testing.T) {
 		eventRecorder := record.NewFakeRecorder(2)
-		r.EventRecorder = eventRecorder
+		r.Recorder = eventRecorder
 
 		failOnSecrets := interceptorFuncs
 		failOnSecrets.Get = func(ctx context.Context, client client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
@@ -225,18 +224,17 @@ func TestVirtualDiskReconciler(t *testing.T) {
 			WithInterceptorFuncs(failOnSecrets).
 			Build()
 
-		resp, err := r.Reconcile(ctx, reconcile.Request{
+		_, err := r.Reconcile(ctx, reconcile.Request{
 			NamespacedName: types.NamespacedName{
 				Name:      vdisk.Name,
 				Namespace: vdisk.Namespace,
 			},
 		})
-		require.NoError(t, err)
-		assert.Zero(t, resp)
+		require.Error(t, err)
 
 		require.Len(t, eventRecorder.Events, 1)
 		event := <-eventRecorder.Events
-		assert.Equal(t, "Warning Failed Failed to reconcile daemonset: bang", event)
+		assert.Equal(t, "Warning Failed Failed to reconcile daemonset: failed to get object: bang", event)
 
 		updatedVDisk := vdisk.DeepCopy()
 		err = subResourceClient.Get(ctx, &vdisk, updatedVDisk)

@@ -171,9 +171,9 @@ func startManager(cCtx *cli.Context) error {
 	}
 
 	if err = (&controller.VirtualDiskReconciler{
-		Client:        mgr.GetClient(),
-		Scheme:        mgr.GetScheme(),
-		EventRecorder: mgr.GetEventRecorderFor("VirtualDisk-controller"),
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("VirtualDisk-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller: %w", err)
 	}
