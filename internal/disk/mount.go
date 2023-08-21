@@ -138,16 +138,28 @@ func connectToServer(ctx context.Context, logger *zap.Logger, opts *MountOptions
 
 			isReady = true
 
-			if createImage && opts.LVM != nil {
-				logger.Info("Setting up logical volume",
-					zap.String("volumeGroup", opts.LVM.VolumeGroup),
-					zap.String("logicalVolume", opts.LVM.LogicalVolume))
+			if opts.LVM != nil {
+				if createImage {
+					logger.Info("Setting up logical volume",
+						zap.String("volumeGroup", opts.LVM.VolumeGroup),
+						zap.String("logicalVolume", opts.LVM.LogicalVolume))
 
-				if err := setupLogicalVolume(devicePath, opts.LVM); err != nil {
-					logger.Error("Failed to setup logical volume", zap.Error(err))
+					if err := setupLogicalVolume(devicePath, opts.LVM); err != nil {
+						logger.Error("Failed to setup logical volume", zap.Error(err))
+					}
+
+					logger.Info("Logical volume setup complete")
+				} else {
+					logger.Info("Activating logical volume",
+						zap.String("volumeGroup", opts.LVM.VolumeGroup),
+						zap.String("logicalVolume", opts.LVM.LogicalVolume))
+
+					if err := activateLogicalVolume(opts.LVM); err != nil {
+						logger.Error("Failed to activate logical volume", zap.Error(err))
+					}
+
+					logger.Info("Logical volume activation complete")
 				}
-
-				logger.Info("Logical volume setup complete")
 			}
 		},
 	}); err != nil {
@@ -296,6 +308,15 @@ func setupLogicalVolume(devicePath string, lvm *LVMOptions) error {
 	output, err = exec.Command("/sbin/lvcreate", "-n", lvm.LogicalVolume, "-l", "100%FREE", lvm.VolumeGroup).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("could not run lvcreate %q: %w", string(output), err)
+	}
+
+	return nil
+}
+
+func activateLogicalVolume(lvm *LVMOptions) error {
+	output, err := exec.Command("/sbin/lvchange", "-a", "y", lvm.VolumeGroup).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("could not run lvchange %q: %w", string(output), err)
 	}
 
 	return nil

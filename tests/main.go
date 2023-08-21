@@ -30,6 +30,7 @@ import (
 	"go.uber.org/zap"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -162,7 +163,100 @@ func main() {
 			return false, fmt.Errorf("block device not found")
 		}
 
-		return job.Status.Succeeded > 0, nil
+		if job.Status.Succeeded > 0 {
+			_ = clientset.BatchV1().Jobs("default").Delete(ctx, "check-virtual-disk", metav1.DeleteOptions{
+				PropagationPolicy: ptr.To(metav1.DeletePropagationBackground),
+			})
+
+			return true, nil
+		}
+
+		return false, nil
+	})
+	if err != nil {
+		logger.Fatal(red("Checking for virtual disk block device failed"), zap.Error(err))
+	}
+
+	logger.Info("Deleting virtual disk")
+
+	if err := dynClient.Resource(diskGVR).Namespace("default").Delete(ctx, "demo", metav1.DeleteOptions{}); err != nil {
+		logger.Fatal(red("Failed to delete virtual disk"), zap.Error(err))
+	}
+
+	logger.Info("Waiting for virtual disk to be deleted")
+
+	err = wait.PollUntilContextTimeout(ctx, 5*time.Second, 5*time.Minute, true, func(ctx context.Context) (bool, error) {
+		_, err := dynClient.Resource(diskGVR).Namespace("default").Get(ctx, "demo", metav1.GetOptions{})
+		if err != nil && apierrors.IsNotFound(err) {
+			return true, nil
+		} else if err != nil {
+			return false, err
+		}
+
+		return false, nil
+	})
+	if err != nil {
+		logger.Fatal(red("Failed to wait for virtual disk to be deleted"), zap.Error(err))
+	}
+
+	logger.Info("Recreating virtual disk")
+
+	// Since the underlying qcow2 file is still present, we can recreate the virtual disk
+	// with the same data
+	if err := createExampleResources(filepath.Join(pwd, "../examples")); err != nil {
+		logger.Fatal(red("Failed to create example resources"), zap.Error(err))
+	}
+
+	logger.Info("Waiting for virtual disk to become ready")
+
+	err = wait.PollUntilContextTimeout(ctx, 5*time.Second, 5*time.Minute, true, func(ctx context.Context) (bool, error) {
+		vdisk, err := dynClient.Resource(diskGVR).Namespace("default").Get(ctx, "demo", metav1.GetOptions{})
+		if err != nil {
+			return true, err
+		}
+
+		phase, ok, err := unstructured.NestedString(vdisk.Object, "status", "phase")
+		if err != nil {
+			return false, err
+		}
+
+		if !ok || phase != "Ready" {
+			logger.Info("Virtual disk not ready")
+
+			return false, nil
+		}
+
+		return true, nil
+	})
+	if err != nil {
+		logger.Fatal(red("Failed to wait for virtual disk to become ready"), zap.Error(err))
+	}
+
+	logger.Info("Checking that the virtual disk is available as a block device")
+
+	if err := checkForVirtualDisk(ctx, clientset); err != nil {
+		logger.Fatal(red("Failed to check for virtual disk"), zap.Error(err))
+	}
+
+	err = wait.PollUntilContextTimeout(ctx, 5*time.Second, 5*time.Minute, true, func(ctx context.Context) (bool, error) {
+		job, err := clientset.BatchV1().Jobs("default").Get(ctx, "check-virtual-disk", metav1.GetOptions{})
+		if err != nil {
+			return false, err
+		}
+
+		if job.Status.Failed > 0 {
+			return false, fmt.Errorf("block device not found")
+		}
+
+		if job.Status.Succeeded > 0 {
+			_ = clientset.BatchV1().Jobs("default").Delete(ctx, "check-virtual-disk", metav1.DeleteOptions{
+				PropagationPolicy: ptr.To(metav1.DeletePropagationBackground),
+			})
+
+			return true, nil
+		}
+
+		return false, nil
 	})
 	if err != nil {
 		logger.Fatal(red("Checking for virtual disk block device failed"), zap.Error(err))
