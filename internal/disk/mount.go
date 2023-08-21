@@ -133,6 +133,9 @@ func connectToServer(ctx context.Context, logger *zap.Logger, opts *MountOptions
 		OnConnected: func() {
 			logger.Info("Connected to nbd server")
 
+			// Seems to be a race condition during the connection process.
+			time.Sleep(5 * time.Second)
+
 			isReady = true
 
 			if createImage && opts.LVM != nil {

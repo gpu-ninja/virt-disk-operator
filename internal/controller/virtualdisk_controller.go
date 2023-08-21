@@ -332,7 +332,7 @@ func (r *VirtualDiskReconciler) daemonSetTemplate(vdisk *virtdiskv1alpha1.Virtua
 			Command: []string{"/bin/sh"},
 			Args: []string{
 				"-c",
-				"[ -d $DEV ] && /sbin/dmsetup remove $DEV || true",
+				"/sbin/dmsetup remove $DEV || true",
 			},
 			Env: []corev1.EnvVar{{
 				Name:  "DEV",
