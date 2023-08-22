@@ -344,6 +344,9 @@ func (r *VirtualDiskReconciler) daemonSetTemplate(vdisk *virtdiskv1alpha1.Virtua
 			VolumeMounts: []corev1.VolumeMount{{
 				Name:      "dev",
 				MountPath: "/dev",
+			}, {
+				Name:      "udev",
+				MountPath: "/run/udev",
 			}},
 		})
 
