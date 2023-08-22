@@ -133,9 +133,6 @@ func connectToServer(ctx context.Context, logger *zap.Logger, opts *MountOptions
 		OnConnected: func() {
 			logger.Info("Connected to nbd server")
 
-			// Seems to be a race condition during the connection process.
-			time.Sleep(5 * time.Second)
-
 			isReady = true
 
 			if opts.LVM != nil {
@@ -295,17 +292,32 @@ func findNextFreeNBDDevice() (string, error) {
 }
 
 func setupLogicalVolume(devicePath string, lvm *LVMOptions) error {
-	output, err := exec.Command("/sbin/pvcreate", devicePath).CombinedOutput()
+	env := append(os.Environ(), "DM_DISABLE_UDEV=1")
+
+	cmd := exec.Command("/sbin/pvcreate", devicePath)
+	cmd.Env = env
+
+	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("could not run pvcreate %q: %w", string(output), err)
 	}
 
-	output, err = exec.Command("/sbin/vgcreate", lvm.VolumeGroup, devicePath).CombinedOutput()
+	time.Sleep(time.Second)
+
+	cmd = exec.Command("/sbin/vgcreate", lvm.VolumeGroup, devicePath)
+	cmd.Env = env
+
+	output, err = cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("could not run vgcreate %q: %w", string(output), err)
 	}
 
-	output, err = exec.Command("/sbin/lvcreate", "-n", lvm.LogicalVolume, "-l", "100%FREE", lvm.VolumeGroup).CombinedOutput()
+	time.Sleep(time.Second)
+
+	cmd = exec.Command("/sbin/lvcreate", "-n", lvm.LogicalVolume, "-l", "100%FREE", lvm.VolumeGroup)
+	cmd.Env = env
+
+	output, err = cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("could not run lvcreate %q: %w", string(output), err)
 	}
@@ -314,7 +326,10 @@ func setupLogicalVolume(devicePath string, lvm *LVMOptions) error {
 }
 
 func activateLogicalVolume(lvm *LVMOptions) error {
-	output, err := exec.Command("/sbin/lvchange", "-a", "y", lvm.VolumeGroup).CombinedOutput()
+	cmd := exec.Command("/sbin/lvchange", "-a", "y", lvm.VolumeGroup)
+	cmd.Env = append(os.Environ(), "DM_DISABLE_UDEV=1")
+
+	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("could not run lvchange %q: %w", string(output), err)
 	}
