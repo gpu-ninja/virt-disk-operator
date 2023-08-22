@@ -385,6 +385,9 @@ func (r *VirtualDiskReconciler) daemonSetTemplate(vdisk *virtdiskv1alpha1.Virtua
 							Name:      "dev",
 							MountPath: "/dev",
 						}, {
+							Name:      "udev",
+							MountPath: "/run/udev",
+						}, {
 							Name:      "data",
 							MountPath: vdisk.Spec.HostPath,
 						}},
@@ -405,6 +408,13 @@ func (r *VirtualDiskReconciler) daemonSetTemplate(vdisk *virtdiskv1alpha1.Virtua
 						VolumeSource: corev1.VolumeSource{
 							HostPath: &corev1.HostPathVolumeSource{
 								Path: "/dev",
+							},
+						},
+					}, {
+						Name: "udev",
+						VolumeSource: corev1.VolumeSource{
+							HostPath: &corev1.HostPathVolumeSource{
+								Path: "/run/udev",
 							},
 						},
 					}, {
