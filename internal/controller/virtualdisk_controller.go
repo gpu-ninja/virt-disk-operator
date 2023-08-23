@@ -325,6 +325,20 @@ func (r *VirtualDiskReconciler) daemonSetTemplate(vdisk *virtdiskv1alpha1.Virtua
 		"--size=" + units.BytesSize(float64(vdisk.Spec.Size.Value())),
 	}
 
+	volumeMounts := []corev1.VolumeMount{{
+		Name:      "dev",
+		MountPath: "/dev",
+	}, {
+		Name:      "udev",
+		MountPath: "/run/udev",
+	}, {
+		Name:      "lvm-cache",
+		MountPath: "/run/lvm",
+	}, {
+		Name:      "lvm-locks",
+		MountPath: "/run/lock/lvm",
+	}}
+
 	if vdisk.Spec.LVM != nil {
 		initContainers = append(initContainers, corev1.Container{
 			Name:    "clean-up-orphaned-device",
@@ -341,13 +355,7 @@ func (r *VirtualDiskReconciler) daemonSetTemplate(vdisk *virtdiskv1alpha1.Virtua
 			SecurityContext: &corev1.SecurityContext{
 				Privileged: ptr.To(true),
 			},
-			VolumeMounts: []corev1.VolumeMount{{
-				Name:      "dev",
-				MountPath: "/dev",
-			}, {
-				Name:      "udev",
-				MountPath: "/run/udev",
-			}},
+			VolumeMounts: volumeMounts,
 		})
 
 		args = append(args, "--lv="+vdisk.Spec.LVM.LogicalVolume, "--vg="+vdisk.Spec.LVM.VolumeGroup)
@@ -384,16 +392,10 @@ func (r *VirtualDiskReconciler) daemonSetTemplate(vdisk *virtdiskv1alpha1.Virtua
 						SecurityContext: &corev1.SecurityContext{
 							Privileged: ptr.To(true),
 						},
-						VolumeMounts: []corev1.VolumeMount{{
-							Name:      "dev",
-							MountPath: "/dev",
-						}, {
-							Name:      "udev",
-							MountPath: "/run/udev",
-						}, {
+						VolumeMounts: append(volumeMounts, corev1.VolumeMount{
 							Name:      "data",
 							MountPath: vdisk.Spec.HostPath,
-						}},
+						}),
 						ReadinessProbe: &corev1.Probe{
 							ProbeHandler: corev1.ProbeHandler{
 								HTTPGet: &corev1.HTTPGetAction{
@@ -432,6 +434,20 @@ func (r *VirtualDiskReconciler) daemonSetTemplate(vdisk *virtdiskv1alpha1.Virtua
 						VolumeSource: corev1.VolumeSource{
 							HostPath: &corev1.HostPathVolumeSource{
 								Path: vdisk.Spec.HostPath,
+							},
+						},
+					}, {
+						Name: "lvm-cache",
+						VolumeSource: corev1.VolumeSource{
+							HostPath: &corev1.HostPathVolumeSource{
+								Path: "/run/lvm",
+							},
+						},
+					}, {
+						Name: "lvm-locks",
+						VolumeSource: corev1.VolumeSource{
+							HostPath: &corev1.HostPathVolumeSource{
+								Path: "/run/lock/lvm",
 							},
 						},
 					}},
