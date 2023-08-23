@@ -340,10 +340,12 @@ func checkForVirtualDisk(ctx context.Context, clientset *kubernetes.Clientset) e
 							VolumeMounts: []corev1.VolumeMount{{
 								Name:      "dev",
 								MountPath: "/dev",
+								ReadOnly:  true,
 							}},
 							SecurityContext: &corev1.SecurityContext{
 								Privileged: ptr.To(true),
 							},
+							TerminationMessagePath: "/tmp/termination-log",
 						},
 					},
 					Volumes: []corev1.Volume{{

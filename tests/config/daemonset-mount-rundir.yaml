@@ -5,10 +5,6 @@ kind: DaemonSet
 metadata:
   name: mount-rundir
   namespace: kube-system
-  labels:
-    app.kubernetes.io/name: mount-rundir
-  annotations:
-    kapp.k14s.io/change-group: "koopt.gpu-ninja.com/mount-rundir"
 spec:
   selector:
     matchLabels:
@@ -34,16 +30,6 @@ spec:
               if [ ! -d /run/lock/lvm ]; then
                 mkdir -p /run/lock/lvm
                 mount --bind /hostrun/lock/lvm /run/lock/lvm
-              fi
-
-              if [ ! -d /run/lvm ]; then
-                mkdir -p /run/lvm
-                mount --bind /hostrun/lvm /run/lvm
-              fi
-
-              if [ ! -d /run/udev ]; then
-                mkdir -p /run/udev
-                mount --bind /hostrun/udev /run/udev
               fi
               
               sleep infinity

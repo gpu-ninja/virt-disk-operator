@@ -299,30 +299,30 @@ func findNextFreeNBDDevice() (string, error) {
 func setupLogicalVolume(ctx context.Context, logger *zap.Logger, devicePath string, lvm *LVMOptions) error {
 	logger.Info("Creating physical volume")
 
-	err := execCommand(ctx, logger, "/sbin/pvcreate", "-v", "-Zn", devicePath)
+	err := execCommand(ctx, "/sbin/pvcreate", "-v", "-Zn", devicePath)
 	if err != nil {
 		return fmt.Errorf("could not run pvcreate: %w", err)
 	}
 
 	logger.Info("Creating volume group")
 
-	err = execCommand(ctx, logger, "/sbin/vgcreate", "-v", lvm.VolumeGroup, devicePath)
+	err = execCommand(ctx, "/sbin/vgcreate", "-v", lvm.VolumeGroup, devicePath)
 	if err != nil {
 		return fmt.Errorf("could not run pvcreate: %w", err)
 	}
 
 	logger.Info("Creating logical volume")
 
-	err = execCommand(ctx, logger, "/sbin/lvcreate", "-v", "--noudevsync", "-Zn", "-n", lvm.LogicalVolume, "-l", "100%FREE", lvm.VolumeGroup)
+	err = execCommand(ctx, "/sbin/lvcreate", "-v", "--noudevsync", "-Zn", "-n", lvm.LogicalVolume, "-l", "100%FREE", lvm.VolumeGroup)
 	if err != nil {
 		return fmt.Errorf("could not run pvcreate: %w", err)
 	}
 
-	logger.Info("Waiting for udev to settle")
+	logger.Info("Making device nodes")
 
-	err = execCommand(ctx, logger, "/usr/bin/udevadm", "settle")
+	err = execCommand(ctx, "/sbin/dmsetup", "mknodes", "-v")
 	if err != nil {
-		return fmt.Errorf("could not run udevadm settle: %w", err)
+		return fmt.Errorf("could not run dmsetup: %w", err)
 	}
 
 	return nil
@@ -331,7 +331,7 @@ func setupLogicalVolume(ctx context.Context, logger *zap.Logger, devicePath stri
 func activateLogicalVolume(ctx context.Context, logger *zap.Logger, lvm *LVMOptions) error {
 	logger.Info("Activating logical volume")
 
-	err := execCommand(ctx, logger, "/sbin/lvchange", "-v", "--noudevsync", "-a", "y", lvm.VolumeGroup)
+	err := execCommand(ctx, "/sbin/lvchange", "-v", "--noudevsync", "-a", "y", lvm.VolumeGroup)
 	if err != nil {
 		return fmt.Errorf("could not run lvchange: %w", err)
 	}
@@ -374,11 +374,12 @@ func startReadyzServer(ctx context.Context, logger *zap.Logger) error {
 	return nil
 }
 
-func execCommand(ctx context.Context, logger *zap.Logger, name string, arg ...string) error {
+func execCommand(ctx context.Context, name string, arg ...string) error {
 	cmdCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	cmd := exec.Command(name, arg...)
+	cmd.Env = os.Environ()
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
@@ -390,11 +391,7 @@ func execCommand(ctx context.Context, logger *zap.Logger, name string, arg ...st
 		<-cmdCtx.Done()
 
 		if _, err := os.FindProcess(cmd.Process.Pid); err != nil {
-			logger.Info("Killing hanged process", zap.String("name", name))
-
-			if err := cmd.Process.Kill(); err != nil {
-				logger.Error("Could not kill process", zap.Error(err))
-			}
+			_ = cmd.Process.Kill()
 		}
 	}()
 

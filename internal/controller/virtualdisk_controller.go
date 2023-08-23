@@ -325,20 +325,6 @@ func (r *VirtualDiskReconciler) daemonSetTemplate(vdisk *virtdiskv1alpha1.Virtua
 		"--size=" + units.BytesSize(float64(vdisk.Spec.Size.Value())),
 	}
 
-	volumeMounts := []corev1.VolumeMount{{
-		Name:      "dev",
-		MountPath: "/dev",
-	}, {
-		Name:      "udev",
-		MountPath: "/run/udev",
-	}, {
-		Name:      "lvm-cache",
-		MountPath: "/run/lvm",
-	}, {
-		Name:      "lvm-locks",
-		MountPath: "/run/lock/lvm",
-	}}
-
 	if vdisk.Spec.LVM != nil {
 		initContainers = append(initContainers, corev1.Container{
 			Name:    "clean-up-orphaned-device",
@@ -346,16 +332,27 @@ func (r *VirtualDiskReconciler) daemonSetTemplate(vdisk *virtdiskv1alpha1.Virtua
 			Command: []string{"/bin/sh"},
 			Args: []string{
 				"-c",
-				"if [ -e \"${DEV}\" ]; then echo 'Removing orphaned device'; /sbin/dmsetup remove -v --noudevsync -f \"${DEV}\"; echo 'Waiting for udev to settle'; udevadm settle; fi",
+				"rm -rf \"/dev/${VG_NAME}\"; if [ -e \"${DEV}\" ]; then /sbin/dmsetup remove -v -f \"${DEV}\"; fi; /sbin/vgscan -v --mknodes",
 			},
 			Env: []corev1.EnvVar{{
+				Name:  "DM_DISABLE_UDEV",
+				Value: "1",
+			}, {
 				Name:  "DEV",
 				Value: toDevMapperPath(vdisk.Spec.LVM),
+			}, {
+				Name:  "VG_NAME",
+				Value: vdisk.Spec.LVM.VolumeGroup,
 			}},
 			SecurityContext: &corev1.SecurityContext{
 				Privileged: ptr.To(true),
 			},
-			VolumeMounts: volumeMounts,
+			VolumeMounts: []corev1.VolumeMount{{
+				Name:             "dev",
+				MountPath:        "/dev",
+				MountPropagation: ptr.To(corev1.MountPropagationBidirectional),
+			}},
+			TerminationMessagePath: "/tmp/termination-log",
 		})
 
 		args = append(args, "--lv="+vdisk.Spec.LVM.LogicalVolume, "--vg="+vdisk.Spec.LVM.VolumeGroup)
@@ -389,13 +386,21 @@ func (r *VirtualDiskReconciler) daemonSetTemplate(vdisk *virtdiskv1alpha1.Virtua
 						Name:  "virt-disk",
 						Image: image,
 						Args:  args,
+						Env: []corev1.EnvVar{{
+							Name:  "DM_DISABLE_UDEV",
+							Value: "1",
+						}},
 						SecurityContext: &corev1.SecurityContext{
 							Privileged: ptr.To(true),
 						},
-						VolumeMounts: append(volumeMounts, corev1.VolumeMount{
+						VolumeMounts: []corev1.VolumeMount{{
 							Name:      "data",
 							MountPath: vdisk.Spec.HostPath,
-						}),
+						}, {
+							Name:             "dev",
+							MountPath:        "/dev",
+							MountPropagation: ptr.To(corev1.MountPropagationBidirectional),
+						}},
 						ReadinessProbe: &corev1.Probe{
 							ProbeHandler: corev1.ProbeHandler{
 								HTTPGet: &corev1.HTTPGetAction{
@@ -407,19 +412,13 @@ func (r *VirtualDiskReconciler) daemonSetTemplate(vdisk *virtdiskv1alpha1.Virtua
 							InitialDelaySeconds: 5,
 							PeriodSeconds:       10,
 						},
+						TerminationMessagePath: "/tmp/termination-log",
 					}},
 					Volumes: []corev1.Volume{{
 						Name: "dev",
 						VolumeSource: corev1.VolumeSource{
 							HostPath: &corev1.HostPathVolumeSource{
 								Path: "/dev",
-							},
-						},
-					}, {
-						Name: "udev",
-						VolumeSource: corev1.VolumeSource{
-							HostPath: &corev1.HostPathVolumeSource{
-								Path: "/run/udev",
 							},
 						},
 					}, {
@@ -434,20 +433,6 @@ func (r *VirtualDiskReconciler) daemonSetTemplate(vdisk *virtdiskv1alpha1.Virtua
 						VolumeSource: corev1.VolumeSource{
 							HostPath: &corev1.HostPathVolumeSource{
 								Path: vdisk.Spec.HostPath,
-							},
-						},
-					}, {
-						Name: "lvm-cache",
-						VolumeSource: corev1.VolumeSource{
-							HostPath: &corev1.HostPathVolumeSource{
-								Path: "/run/lvm",
-							},
-						},
-					}, {
-						Name: "lvm-locks",
-						VolumeSource: corev1.VolumeSource{
-							HostPath: &corev1.HostPathVolumeSource{
-								Path: "/run/lock/lvm",
 							},
 						},
 					}},
