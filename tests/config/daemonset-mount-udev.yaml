@@ -7,6 +7,8 @@ metadata:
   namespace: kube-system
   labels:
     app.kubernetes.io/name: mount-udev
+  annotations:
+    kapp.k14s.io/change-group: "koopt.gpu-ninja.com/mount-udev"
 spec:
   selector:
     matchLabels:

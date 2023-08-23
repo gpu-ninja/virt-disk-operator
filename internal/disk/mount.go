@@ -296,30 +296,42 @@ func findNextFreeNBDDevice() (string, error) {
 func setupLogicalVolume(logger *zap.Logger, devicePath string, lvm *LVMOptions) error {
 	logger.Info("Creating physical volume")
 
-	output, err := exec.Command("/sbin/pvcreate", devicePath).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("could not run pvcreate %q: %w", string(output), err)
+	cmd := exec.Command("/sbin/pvcreate", "-v", "-Zn", devicePath)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("could not run pvcreate: %w", err)
 	}
 
 	logger.Info("Creating volume group")
 
-	output, err = exec.Command("/sbin/vgcreate", lvm.VolumeGroup, devicePath).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("could not run vgcreate %q: %w", string(output), err)
+	cmd = exec.Command("/sbin/vgcreate", "-v", lvm.VolumeGroup, devicePath)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("could not run pvcreate: %w", err)
 	}
 
 	logger.Info("Creating logical volume")
 
-	output, err = exec.Command("/sbin/lvcreate", "-Zn", "-n", lvm.LogicalVolume, "-l", "100%FREE", lvm.VolumeGroup).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("could not run lvcreate %q: %w", string(output), err)
+	cmd = exec.Command("/sbin/lvcreate", "-v", "--noudevsync", "-Zn", "-n", lvm.LogicalVolume, "-l", "100%FREE", lvm.VolumeGroup)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("could not run pvcreate: %w", err)
 	}
 
 	logger.Info("Waiting for udev to settle")
 
-	output, err = exec.Command("/usr/bin/udevadm", "settle").CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("could not run udevadm settle %q: %w", string(output), err)
+	cmd = exec.Command("/usr/bin/udevadm", "settle")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("could not run udevadm settle: %w", err)
 	}
 
 	return nil
@@ -328,9 +340,12 @@ func setupLogicalVolume(logger *zap.Logger, devicePath string, lvm *LVMOptions) 
 func activateLogicalVolume(logger *zap.Logger, lvm *LVMOptions) error {
 	logger.Info("Activating logical volume")
 
-	output, err := exec.Command("/sbin/lvchange", "-a", "y", lvm.VolumeGroup).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("could not run lvchange %q: %w", string(output), err)
+	cmd := exec.Command("/sbin/lvchange", "-v", "--noudevsync", "-a", "y", lvm.VolumeGroup)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("could not run lvchange: %w", err)
 	}
 
 	return nil

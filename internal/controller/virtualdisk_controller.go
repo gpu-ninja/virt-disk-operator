@@ -332,7 +332,7 @@ func (r *VirtualDiskReconciler) daemonSetTemplate(vdisk *virtdiskv1alpha1.Virtua
 			Command: []string{"/bin/sh"},
 			Args: []string{
 				"-c",
-				"/sbin/dmsetup remove $DEV || true",
+				"if [ -e \"${DEV}\" ]; then echo 'Removing orphaned device'; /sbin/dmsetup remove -v --noudevsync -f \"${DEV}\"; echo 'Waiting for udev to settle'; udevadm settle; fi",
 			},
 			Env: []corev1.EnvVar{{
 				Name:  "DEV",
