@@ -139,7 +139,7 @@ func TestVirtualDiskReconciler(t *testing.T) {
 
 		ds := &appsv1.DaemonSet{}
 		err = r.Client.Get(ctx, types.NamespacedName{
-			Name:      vdisk.Name,
+			Name:      "virt-disk-" + vdisk.Name,
 			Namespace: vdisk.Namespace,
 		}, ds)
 		require.NoError(t, err)

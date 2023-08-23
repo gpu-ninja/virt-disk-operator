@@ -29,6 +29,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/containerd/nydus-snapshotter/pkg/utils/retry"
 	"github.com/docker/go-units"
 	"github.com/gpu-ninja/qcow2"
 	"github.com/pojntfx/go-nbd/pkg/client"
@@ -131,10 +132,6 @@ func connectToServer(ctx context.Context, logger *zap.Logger, opts *MountOptions
 		ExportName: "virt-disk",
 		BlockSize:  uint32(client.MaximumBlockSize),
 		OnConnected: func() {
-			defer func() {
-				isReady = true
-			}()
-
 			logger.Info("Connected to nbd server")
 
 			if opts.LVM != nil {
@@ -143,8 +140,10 @@ func connectToServer(ctx context.Context, logger *zap.Logger, opts *MountOptions
 						zap.String("volumeGroup", opts.LVM.VolumeGroup),
 						zap.String("logicalVolume", opts.LVM.LogicalVolume))
 
-					if err := setupLogicalVolume(logger, devicePath, opts.LVM); err != nil {
+					if err := setupLogicalVolume(ctx, logger, devicePath, opts.LVM); err != nil {
 						logger.Error("Failed to setup logical volume", zap.Error(err))
+
+						return
 					}
 
 					logger.Info("Logical volume setup complete")
@@ -153,12 +152,16 @@ func connectToServer(ctx context.Context, logger *zap.Logger, opts *MountOptions
 						zap.String("volumeGroup", opts.LVM.VolumeGroup),
 						zap.String("logicalVolume", opts.LVM.LogicalVolume))
 
-					if err := activateLogicalVolume(logger, opts.LVM); err != nil {
+					if err := activateLogicalVolume(ctx, logger, opts.LVM); err != nil {
 						logger.Error("Failed to activate logical volume", zap.Error(err))
+
+						return
 					}
 
 					logger.Info("Logical volume activation complete")
 				}
+
+				isReady = true
 			}
 		},
 	}); err != nil {
@@ -293,58 +296,43 @@ func findNextFreeNBDDevice() (string, error) {
 	return "", fmt.Errorf("no free NBD devices found")
 }
 
-func setupLogicalVolume(logger *zap.Logger, devicePath string, lvm *LVMOptions) error {
+func setupLogicalVolume(ctx context.Context, logger *zap.Logger, devicePath string, lvm *LVMOptions) error {
 	logger.Info("Creating physical volume")
 
-	cmd := exec.Command("/sbin/pvcreate", "-v", "-Zn", devicePath)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	if err := cmd.Run(); err != nil {
+	err := execCommand(ctx, logger, "/sbin/pvcreate", "-v", "-Zn", devicePath)
+	if err != nil {
 		return fmt.Errorf("could not run pvcreate: %w", err)
 	}
 
 	logger.Info("Creating volume group")
 
-	cmd = exec.Command("/sbin/vgcreate", "-v", lvm.VolumeGroup, devicePath)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	if err := cmd.Run(); err != nil {
+	err = execCommand(ctx, logger, "/sbin/vgcreate", "-v", lvm.VolumeGroup, devicePath)
+	if err != nil {
 		return fmt.Errorf("could not run pvcreate: %w", err)
 	}
 
 	logger.Info("Creating logical volume")
 
-	cmd = exec.Command("/sbin/lvcreate", "-v", "--noudevsync", "-Zn", "-n", lvm.LogicalVolume, "-l", "100%FREE", lvm.VolumeGroup)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	if err := cmd.Run(); err != nil {
+	err = execCommand(ctx, logger, "/sbin/lvcreate", "-v", "--noudevsync", "-Zn", "-n", lvm.LogicalVolume, "-l", "100%FREE", lvm.VolumeGroup)
+	if err != nil {
 		return fmt.Errorf("could not run pvcreate: %w", err)
 	}
 
 	logger.Info("Waiting for udev to settle")
 
-	cmd = exec.Command("/usr/bin/udevadm", "settle")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	if err := cmd.Run(); err != nil {
+	err = execCommand(ctx, logger, "/usr/bin/udevadm", "settle")
+	if err != nil {
 		return fmt.Errorf("could not run udevadm settle: %w", err)
 	}
 
 	return nil
 }
 
-func activateLogicalVolume(logger *zap.Logger, lvm *LVMOptions) error {
+func activateLogicalVolume(ctx context.Context, logger *zap.Logger, lvm *LVMOptions) error {
 	logger.Info("Activating logical volume")
 
-	cmd := exec.Command("/sbin/lvchange", "-v", "--noudevsync", "-a", "y", lvm.VolumeGroup)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	if err := cmd.Run(); err != nil {
+	err := execCommand(ctx, logger, "/sbin/lvchange", "-v", "--noudevsync", "-a", "y", lvm.VolumeGroup)
+	if err != nil {
 		return fmt.Errorf("could not run lvchange: %w", err)
 	}
 
@@ -384,4 +372,31 @@ func startReadyzServer(ctx context.Context, logger *zap.Logger) error {
 	}
 
 	return nil
+}
+
+func execCommand(ctx context.Context, logger *zap.Logger, name string, arg ...string) error {
+	cmdCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	cmd := exec.Command(name, arg...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Start(); err != nil {
+		return retry.Unrecoverable(err)
+	}
+
+	go func() {
+		<-cmdCtx.Done()
+
+		if _, err := os.FindProcess(cmd.Process.Pid); err != nil {
+			logger.Info("Killing hanged process", zap.String("name", name))
+
+			if err := cmd.Process.Kill(); err != nil {
+				logger.Error("Could not kill process", zap.Error(err))
+			}
+		}
+	}()
+
+	return cmd.Wait()
 }

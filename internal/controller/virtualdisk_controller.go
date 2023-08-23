@@ -355,7 +355,7 @@ func (r *VirtualDiskReconciler) daemonSetTemplate(vdisk *virtdiskv1alpha1.Virtua
 
 	ds := appsv1.DaemonSet{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      vdisk.Name,
+			Name:      "virt-disk-" + vdisk.Name,
 			Namespace: vdisk.Namespace,
 			Labels:    make(map[string]string),
 		},
@@ -458,7 +458,7 @@ func (r *VirtualDiskReconciler) daemonSetTemplate(vdisk *virtdiskv1alpha1.Virtua
 func (r *VirtualDiskReconciler) isDaemonSetReady(ctx context.Context, vdisk *virtdiskv1alpha1.VirtualDisk) (bool, error) {
 	ds := appsv1.DaemonSet{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      vdisk.Name,
+			Name:      "virt-disk-" + vdisk.Name,
 			Namespace: vdisk.Namespace,
 		},
 	}

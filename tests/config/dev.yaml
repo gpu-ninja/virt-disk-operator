@@ -6,7 +6,7 @@ metadata:
   #@overlay/match missing_ok=True
   annotations:
     kapp.k14s.io/change-group: "koopt.gpu-ninja.com/virt-disk"
-    kapp.k14s.io/change-rule: "upsert after upserting koopt.gpu-ninja.com/mount-udev"
+    kapp.k14s.io/change-rule: "upsert after upserting koopt.gpu-ninja.com/mount-rundir"
 spec:
   template:
     spec:

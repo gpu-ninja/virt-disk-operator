@@ -1,0 +1,51 @@
+# By default K3D mounts a tmpfs on /run, this makes it impossible to bind mount
+# /run/udev directly (due to the order of operations inside container runtime).
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: mount-rundir
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: mount-rundir
+  annotations:
+    kapp.k14s.io/change-group: "koopt.gpu-ninja.com/mount-rundir"
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mount-rundir
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mount-rundir
+    spec:
+      hostPID: true
+      containers:
+        - name: mount-rundir
+          image: debian:bookworm-slim
+          command:
+            - "nsenter" 
+            - "--mount=/proc/1/ns/mnt"
+            - "--"
+            - "/bin/sh"
+            - "-c"
+            - |
+              echo 'Mounting run directories (if necessary)'
+
+              if [ ! -d /run/lock/lvm ]; then
+                mkdir -p /run/lock/lvm
+                mount --bind /hostrun/lock/lvm /run/lock/lvm
+              fi
+
+              if [ ! -d /run/lvm ]; then
+                mkdir -p /run/lvm
+                mount --bind /hostrun/lvm /run/lvm
+              fi
+
+              if [ ! -d /run/udev ]; then
+                mkdir -p /run/udev
+                mount --bind /hostrun/udev /run/udev
+              fi
+              
+              sleep infinity
+          securityContext:
+            privileged: true
