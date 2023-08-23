@@ -6,7 +6,7 @@ servers: 1
 agents: 0
 image: ghcr.io/gpu-ninja/k3s-debian:v1.27.3
 volumes:
-  - volume: /dev:/dev:rshared
+  - volume: /dev:/dev
     nodeFilters:
       - server:0
       - agent:*

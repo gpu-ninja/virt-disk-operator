@@ -348,11 +348,9 @@ func (r *VirtualDiskReconciler) daemonSetTemplate(vdisk *virtdiskv1alpha1.Virtua
 				Privileged: ptr.To(true),
 			},
 			VolumeMounts: []corev1.VolumeMount{{
-				Name:             "dev",
-				MountPath:        "/dev",
-				MountPropagation: ptr.To(corev1.MountPropagationBidirectional),
+				Name:      "dev",
+				MountPath: "/dev",
 			}},
-			TerminationMessagePath: "/tmp/termination-log",
 		})
 
 		args = append(args, "--lv="+vdisk.Spec.LVM.LogicalVolume, "--vg="+vdisk.Spec.LVM.VolumeGroup)
@@ -397,9 +395,8 @@ func (r *VirtualDiskReconciler) daemonSetTemplate(vdisk *virtdiskv1alpha1.Virtua
 							Name:      "data",
 							MountPath: vdisk.Spec.HostPath,
 						}, {
-							Name:             "dev",
-							MountPath:        "/dev",
-							MountPropagation: ptr.To(corev1.MountPropagationBidirectional),
+							Name:      "dev",
+							MountPath: "/dev",
 						}},
 						ReadinessProbe: &corev1.Probe{
 							ProbeHandler: corev1.ProbeHandler{
@@ -412,7 +409,6 @@ func (r *VirtualDiskReconciler) daemonSetTemplate(vdisk *virtdiskv1alpha1.Virtua
 							InitialDelaySeconds: 5,
 							PeriodSeconds:       10,
 						},
-						TerminationMessagePath: "/tmp/termination-log",
 					}},
 					Volumes: []corev1.Volume{{
 						Name: "dev",
