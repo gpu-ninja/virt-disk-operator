@@ -327,12 +327,25 @@ func (r *VirtualDiskReconciler) daemonSetTemplate(vdisk *virtdiskv1alpha1.Virtua
 
 	if vdisk.Spec.LVM != nil {
 		initContainers = append(initContainers, corev1.Container{
-			Name:    "clean-up-orphaned-device",
+			Name:    "clean-up",
 			Image:   image,
 			Command: []string{"/bin/sh"},
 			Args: []string{
 				"-c",
-				"rm -rf \"/dev/${VG_NAME}\"; if [ -e \"${DEV}\" ]; then /sbin/dmsetup remove -v -f \"${DEV}\"; fi; /sbin/vgscan -v --mknodes",
+				`
+if [ -e "${DEV}" ]; then
+  echo 'Removing existing devmapper device'
+  /sbin/dmsetup remove -v -f "${DEV}" || rm -f "${DEV}"
+fi
+
+if [ -d "/dev/${VG_NAME}" ]; then
+  echo 'Removing volume group dev nodes'
+  rm -rf "/dev/${VG_NAME}"
+fi
+
+echo 'Rescanning volume groups'
+/sbin/vgscan -v --mknodes
+`,
 			},
 			Env: []corev1.EnvVar{{
 				Name:  "DM_DISABLE_UDEV",
