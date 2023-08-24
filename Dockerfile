@@ -11,7 +11,7 @@ FROM debian:bookworm-slim
 WORKDIR /
 
 RUN apt update \
-  && apt install -y lvm2 kmod udev
+  && apt install -y lvm2 kmod
 
 COPY --from=builder /workspace/bin/manager .
 

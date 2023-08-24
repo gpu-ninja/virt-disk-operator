@@ -1,5 +1,5 @@
 # By default K3D mounts a tmpfs on /run, this makes it impossible to bind mount
-# /run/udev directly (due to the order of operations inside container runtime).
+# /run dirs from the host directly (due to the order of operations inside container runtime).
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
