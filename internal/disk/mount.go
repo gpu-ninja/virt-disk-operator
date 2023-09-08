@@ -92,7 +92,8 @@ func MountVirtualDisk(ctx context.Context, logger *zap.Logger, opts *MountOption
 		return err
 	}
 
-	return nil
+	// context has already been cancelled.
+	return deactivateLogicalVolume(context.Background(), logger, opts.LVM)
 }
 
 func connectToServer(ctx context.Context, logger *zap.Logger, opts *MountOptions,
@@ -325,6 +326,17 @@ func activateLogicalVolume(ctx context.Context, logger *zap.Logger, lvm *LVMOpti
 	logger.Info("Activating logical volume")
 
 	err := execCommand(ctx, "/sbin/lvchange", "-v", "-a", "y", lvm.VolumeGroup)
+	if err != nil {
+		return fmt.Errorf("could not run lvchange: %w", err)
+	}
+
+	return nil
+}
+
+func deactivateLogicalVolume(ctx context.Context, logger *zap.Logger, lvm *LVMOptions) error {
+	logger.Info("Deactivating logical volume")
+
+	err := execCommand(ctx, "/sbin/lvchange", "-v", "-a", "n", lvm.VolumeGroup)
 	if err != nil {
 		return fmt.Errorf("could not run lvchange: %w", err)
 	}
