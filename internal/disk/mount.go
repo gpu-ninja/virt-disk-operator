@@ -313,16 +313,9 @@ func setupLogicalVolume(ctx context.Context, logger *zap.Logger, devicePath stri
 
 	logger.Info("Creating logical volume")
 
-	err = execCommand(ctx, "/sbin/lvcreate", "-v", "--noudevsync", "-Zn", "-n", lvm.LogicalVolume, "-l", "100%FREE", lvm.VolumeGroup)
+	err = execCommand(ctx, "/sbin/lvcreate", "-v", "-Zn", "-n", lvm.LogicalVolume, "-l", "100%FREE", lvm.VolumeGroup)
 	if err != nil {
 		return fmt.Errorf("could not run pvcreate: %w", err)
-	}
-
-	logger.Info("Making device nodes")
-
-	err = execCommand(ctx, "/sbin/dmsetup", "mknodes", "-v")
-	if err != nil {
-		return fmt.Errorf("could not run dmsetup: %w", err)
 	}
 
 	return nil
@@ -331,7 +324,7 @@ func setupLogicalVolume(ctx context.Context, logger *zap.Logger, devicePath stri
 func activateLogicalVolume(ctx context.Context, logger *zap.Logger, lvm *LVMOptions) error {
 	logger.Info("Activating logical volume")
 
-	err := execCommand(ctx, "/sbin/lvchange", "-v", "--noudevsync", "-a", "y", lvm.VolumeGroup)
+	err := execCommand(ctx, "/sbin/lvchange", "-v", "-a", "y", lvm.VolumeGroup)
 	if err != nil {
 		return fmt.Errorf("could not run lvchange: %w", err)
 	}

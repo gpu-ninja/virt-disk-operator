@@ -348,9 +348,6 @@ echo 'Rescanning volume groups'
 `,
 			},
 			Env: []corev1.EnvVar{{
-				Name:  "DM_DISABLE_UDEV",
-				Value: "1",
-			}, {
 				Name:  "DEV",
 				Value: toDevMapperPath(vdisk.Spec.LVM),
 			}, {
@@ -363,6 +360,9 @@ echo 'Rescanning volume groups'
 			VolumeMounts: []corev1.VolumeMount{{
 				Name:      "dev",
 				MountPath: "/dev",
+			}, {
+				Name:      "udev",
+				MountPath: "/run/udev",
 			}},
 		})
 
@@ -397,10 +397,6 @@ echo 'Rescanning volume groups'
 						Name:  "virt-disk",
 						Image: image,
 						Args:  args,
-						Env: []corev1.EnvVar{{
-							Name:  "DM_DISABLE_UDEV",
-							Value: "1",
-						}},
 						SecurityContext: &corev1.SecurityContext{
 							Privileged: ptr.To(true),
 						},
@@ -410,6 +406,9 @@ echo 'Rescanning volume groups'
 						}, {
 							Name:      "dev",
 							MountPath: "/dev",
+						}, {
+							Name:      "udev",
+							MountPath: "/run/udev",
 						}},
 						ReadinessProbe: &corev1.Probe{
 							ProbeHandler: corev1.ProbeHandler{
@@ -435,6 +434,13 @@ echo 'Rescanning volume groups'
 						VolumeSource: corev1.VolumeSource{
 							HostPath: &corev1.HostPathVolumeSource{
 								Path: "/lib/modules",
+							},
+						},
+					}, {
+						Name: "udev",
+						VolumeSource: corev1.VolumeSource{
+							HostPath: &corev1.HostPathVolumeSource{
+								Path: "/run/udev",
 							},
 						},
 					}, {
