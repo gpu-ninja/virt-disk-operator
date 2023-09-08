@@ -5,16 +5,6 @@ metadata:
 servers: 1
 agents: 0
 image: ghcr.io/gpu-ninja/k3s-debian:v1.27.3
-volumes:
-  - volume: /dev:/dev
-    nodeFilters:
-      - server:0
-      - agent:*
-  - volume: /lib/modules:/lib/modules:ro
-    nodeFilters:
-      - server:0
-      - agent:*
-  - volume: /run/lock/lvm:/hostrun/lock/lvm
-    nodeFilters:
-      - server:0
-      - agent:*
+options:
+  runtime:
+    hostPidMode: true

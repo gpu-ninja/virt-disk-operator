@@ -333,9 +333,9 @@ func (r *VirtualDiskReconciler) daemonSetTemplate(vdisk *virtdiskv1alpha1.Virtua
 			Args: []string{
 				"-c",
 				`
-if [ -e "${DEV}" ]; then
+if dmsetup ls | grep "${NAME}" >/dev/null; then
   echo 'Removing existing devmapper device'
-  /sbin/dmsetup remove -v -f "${DEV}" || rm -f "${DEV}"
+  /sbin/dmsetup remove -v -f "${NAME}" 
 fi
 
 if [ -d "/dev/${VG_NAME}" ]; then
@@ -343,13 +343,13 @@ if [ -d "/dev/${VG_NAME}" ]; then
   rm -rf "/dev/${VG_NAME}"
 fi
 
-echo 'Rescanning volume groups'
-/sbin/vgscan -v --mknodes
+echo 'Waiting for udev to settle'
+udevadm settle
 `,
 			},
 			Env: []corev1.EnvVar{{
-				Name:  "DEV",
-				Value: toDevMapperPath(vdisk.Spec.LVM),
+				Name:  "NAME",
+				Value: lvmName(vdisk.Spec.LVM),
 			}, {
 				Name:  "VG_NAME",
 				Value: vdisk.Spec.LVM.VolumeGroup,
@@ -390,6 +390,8 @@ echo 'Rescanning volume groups'
 					},
 				},
 				Spec: corev1.PodSpec{
+					// udev communication involves semaphores.
+					HostIPC:                       true,
 					TerminationGracePeriodSeconds: ptr.To(int64(10)),
 					NodeSelector:                  vdisk.Spec.NodeSelector,
 					InitContainers:                initContainers,
@@ -487,10 +489,10 @@ func (r *VirtualDiskReconciler) isDaemonSetReady(ctx context.Context, vdisk *vir
 		ds.Status.NumberReady == ds.Status.DesiredNumberScheduled, nil
 }
 
-func toDevMapperPath(lvm *virtdiskv1alpha1.VirtualDiskLVMSpec) string {
+func lvmName(lvm *virtdiskv1alpha1.VirtualDiskLVMSpec) string {
 	lvmEscape := func(input string) string {
 		return strings.ReplaceAll(input, "-", "--")
 	}
 
-	return fmt.Sprintf("/dev/mapper/%s-%s", lvmEscape(lvm.VolumeGroup), lvmEscape(lvm.LogicalVolume))
+	return fmt.Sprintf("%s-%s", lvmEscape(lvm.VolumeGroup), lvmEscape(lvm.LogicalVolume))
 }

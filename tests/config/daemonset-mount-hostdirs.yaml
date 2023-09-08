@@ -1,0 +1,88 @@
+# This hack exists mostly because of Docker for Mac, which does not support
+# directly mounting linuxkit directories into containers. This assumes that 
+# the node container is running in privileged and hostPID mode.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: mount-hostdirs
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mount-hostdirs
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mount-hostdirs
+    spec:
+      hostPID: true
+      containers:
+        - name: mount-hostdirs
+          image: debian:bookworm-slim
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -e
+
+              NODE_CONTAINER_PID=$(cut -d ' ' -f 4 /proc/$$/stat)
+              NODE_CONTAINER_ROOT=$(nsenter -t ${NODE_CONTAINER_PID} -m /bin/bash -c 'mount | grep "overlay on / type overlay" | sed -n -e "s/.*upperdir=\(.*\)\/diff.*/\1\/merged/p"')
+
+              echo "Node container pid: ${NODE_CONTAINER_PID}, root: ${NODE_CONTAINER_ROOT}"
+
+              nsenter -t 1 -m /bin/bash -c "
+                if [ ! -d \"${NODE_CONTAINER_ROOT}/host\" ]; then
+                  echo 'Mounting host filesystem into node container'
+                  
+                  mkdir -p \"${NODE_CONTAINER_ROOT}/host/dev\"
+                  mount --bind /dev \"${NODE_CONTAINER_ROOT}/host/dev\"
+                  mount --make-rshared \"${NODE_CONTAINER_ROOT}/host/dev\"
+
+                  mkdir -p \"${NODE_CONTAINER_ROOT}/host/run\"
+                  mount --bind /run \"${NODE_CONTAINER_ROOT}/host/run\"
+                  mount --make-rshared \"${NODE_CONTAINER_ROOT}/host/run\"
+
+                  mkdir -p \"${NODE_CONTAINER_ROOT}/host/lib/modules\"
+                  mount --bind /lib/modules \"${NODE_CONTAINER_ROOT}/host/lib/modules\"
+                  mount -o bind,remount,ro \"${NODE_CONTAINER_ROOT}/host/lib/modules\"
+                fi
+              "
+
+              nsenter -t ${NODE_CONTAINER_PID} -m /bin/bash -c "
+                if [ -d /host/lib/modules ]; then
+                  if  [ ! -d /lib/modules ] || [ -z "$(ls -A -- /lib/modules 2>/dev/null)" ]; then
+                    echo 'Mounting /lib/modules'
+                    mkdir -p /lib/modules
+                    mount --bind /host/lib/modules /lib/modules
+                    mount -o bind,remount,ro /lib/modules
+                  fi
+                fi
+
+                if [ -d /host/run/lvm ]; then
+                  if  [ ! -d /run/lvm ] || [ -z "$(ls -A -- /run/lvm 2>/dev/null)" ]; then
+                    echo 'Mounting /run/lvm'
+                    mkdir -p /run/lvm
+                    mount --bind /host/run/lvm /run/lvm
+                    mount --make-rshared /run/lvm
+                  fi
+                fi
+
+                if [ -d /host/run/lock/lvm ]; then
+                  if  [ ! -d /run/lock/lvm ] || [ -z "$(ls -A -- /run/lock/lvm 2>/dev/null)" ]; then
+                    echo 'Mounting /run/lock/lvm'
+                    mkdir -p /run/lock/lvm
+                    mount --bind /host/run/lock/lvm /run/lock/lvm
+                    mount --make-rshared /run/lock/lvm
+                  fi
+                fi
+              "
+
+              sleep infinity
+          securityContext:
+            privileged: true
+          resources:
+            requests:
+              memory: "5Mi"
+              cpu: "1m"
+            limits:
+              memory: "10Mi"
+              cpu: "10m"
