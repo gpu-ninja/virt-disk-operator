@@ -301,13 +301,19 @@ func (r *VirtualDiskReconciler) getOperatorImage(ctx context.Context) (string, e
 
 func (r *VirtualDiskReconciler) daemonSetTemplate(vdisk *virtdiskv1alpha1.VirtualDisk, image string) (*appsv1.DaemonSet, error) {
 	initContainers := []corev1.Container{{
-		Name:  "load-nbd-module",
-		Image: image,
-		Command: []string{
-			"/sbin/modprobe",
-		},
+		Name:    "load-nbd-module",
+		Image:   image,
+		Command: []string{"/bin/sh"},
 		Args: []string{
-			"nbd",
+			"-c",
+			`
+/sbin/modprobe nbd
+
+while [ ! -b /dev/nbd0 ]; do
+  echo 'Waiting for nbd device nodes'
+  sleep 1
+done
+`,
 		},
 		SecurityContext: &corev1.SecurityContext{
 			Privileged: ptr.To(true),

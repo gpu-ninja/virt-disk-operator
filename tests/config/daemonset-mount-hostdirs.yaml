@@ -5,6 +5,7 @@ apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: mount-hostdirs
+  namespace: kube-system
 spec:
   selector:
     matchLabels:
@@ -25,12 +26,12 @@ spec:
               set -e
 
               NODE_CONTAINER_PID=$(cut -d ' ' -f 4 /proc/$$/stat)
-              NODE_CONTAINER_ROOT=$(nsenter -t ${NODE_CONTAINER_PID} -m /bin/bash -c 'mount | grep "overlay on / type overlay" | sed -n -e "s/.*upperdir=\(.*\)\/diff.*/\1\/merged/p"')
+              NODE_CONTAINER_ROOT=$(nsenter -t ${NODE_CONTAINER_PID} -m /bin/sh -c 'mount | grep "overlay on / type overlay" | sed -n -e "s/.*upperdir=\(.*\)\/diff.*/\1\/merged/p"')
 
               echo "Node container pid: ${NODE_CONTAINER_PID}, root: ${NODE_CONTAINER_ROOT}"
 
-              nsenter -t 1 -m /bin/bash -c "
-                if [ ! -d \"${NODE_CONTAINER_ROOT}/host\" ]; then
+              nsenter -t 1 -m /bin/sh -c "
+                if [ -z \"$(find \"\${NODE_CONTAINER_ROOT}/host\" -type f -print -quit 2>/dev/null)\" ]; then
                   echo 'Mounting host filesystem into node container'
                   
                   mkdir -p \"${NODE_CONTAINER_ROOT}/host/dev\"
@@ -47,9 +48,9 @@ spec:
                 fi
               "
 
-              nsenter -t ${NODE_CONTAINER_PID} -m /bin/bash -c "
+              nsenter -t ${NODE_CONTAINER_PID} -m /bin/sh -c "
                 if [ -d /host/lib/modules ]; then
-                  if  [ ! -d /lib/modules ] || [ -z "$(ls -A -- /lib/modules 2>/dev/null)" ]; then
+                  if [ -z \"\$(find /lib/modules -type f -print -quit 2>/dev/null)\" ]; then
                     echo 'Mounting /lib/modules'
                     mkdir -p /lib/modules
                     mount --bind /host/lib/modules /lib/modules
@@ -58,7 +59,7 @@ spec:
                 fi
 
                 if [ -d /host/run/lvm ]; then
-                  if  [ ! -d /run/lvm ] || [ -z "$(ls -A -- /run/lvm 2>/dev/null)" ]; then
+                  if [ -z \"\$(find /run/lvm -type f -print -quit 2>/dev/null)\" ]; then
                     echo 'Mounting /run/lvm'
                     mkdir -p /run/lvm
                     mount --bind /host/run/lvm /run/lvm
@@ -67,7 +68,7 @@ spec:
                 fi
 
                 if [ -d /host/run/lock/lvm ]; then
-                  if  [ ! -d /run/lock/lvm ] || [ -z "$(ls -A -- /run/lock/lvm 2>/dev/null)" ]; then
+                  if [ -z \"\$(find /run/lock/lvm -type f -print -quit 2>/dev/null)\" ]; then
                     echo 'Mounting /run/lock/lvm'
                     mkdir -p /run/lock/lvm
                     mount --bind /host/run/lock/lvm /run/lock/lvm
@@ -81,8 +82,8 @@ spec:
             privileged: true
           resources:
             requests:
-              memory: "5Mi"
-              cpu: "1m"
-            limits:
-              memory: "10Mi"
+              memory: "16Mi"
               cpu: "10m"
+            limits:
+              memory: "32Mi"
+              cpu: "50m"
