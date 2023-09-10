@@ -27,6 +27,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/containerd/nydus-snapshotter/pkg/utils/retry"
@@ -92,8 +93,7 @@ func MountVirtualDisk(ctx context.Context, logger *zap.Logger, opts *MountOption
 		return err
 	}
 
-	// context has already been cancelled.
-	return deactivateLogicalVolume(context.Background(), logger, opts.LVM)
+	return nil
 }
 
 func connectToServer(ctx context.Context, logger *zap.Logger, opts *MountOptions,
@@ -120,6 +120,13 @@ func connectToServer(ctx context.Context, logger *zap.Logger, opts *MountOptions
 	go func() {
 		<-ctx.Done()
 
+		logger.Info("Deactivating logical volume")
+
+		// context has already been cancelled.
+		if err := deactivateLogicalVolume(context.Background(), logger, opts.LVM); err != nil {
+			logger.Error("Failed to deactivate logical volume", zap.Error(err))
+		}
+
 		logger.Info("Disconnecting from nbd server")
 
 		if err := client.Disconnect(f); err != nil {
@@ -141,8 +148,14 @@ func connectToServer(ctx context.Context, logger *zap.Logger, opts *MountOptions
 						zap.String("volumeGroup", opts.LVM.VolumeGroup),
 						zap.String("logicalVolume", opts.LVM.LogicalVolume))
 
-					if err := setupLogicalVolume(ctx, logger, devicePath, opts.LVM); err != nil {
-						logger.Error("Failed to setup logical volume", zap.Error(err))
+					if err := createLogicalVolume(ctx, logger, devicePath, opts.LVM); err != nil {
+						logger.Error("Failed to create logical volume", zap.Error(err))
+
+						return
+					}
+
+					if err := activateLogicalVolume(ctx, logger, opts.LVM); err != nil {
+						logger.Error("Failed to activate logical volume", zap.Error(err))
 
 						return
 					}
@@ -204,11 +217,17 @@ func listenForConnections(ctx context.Context, logger *zap.Logger, opts *MountOp
 		}
 	}
 
+	var wg sync.WaitGroup
+
 	ch := make(chan net.Conn)
 	go func() {
 		for {
 			select {
 			case <-ctx.Done():
+				logger.Info("Waiting for connections to finish")
+
+				wg.Wait()
+
 				logger.Info("Shutting down server")
 
 				if err := lis.Close(); err != nil {
@@ -221,7 +240,13 @@ func listenForConnections(ctx context.Context, logger *zap.Logger, opts *MountOp
 
 				return
 			case conn := <-ch:
-				go handleConnection(conn, b, logger)
+				wg.Add(1)
+
+				go func() {
+					defer wg.Done()
+
+					handleConnection(conn, b, logger)
+				}()
 			}
 		}
 	}()
@@ -276,74 +301,6 @@ func handleConnection(conn net.Conn, b *qcow2.Image, logger *zap.Logger) {
 	}
 }
 
-func findNextFreeNBDDevice() (string, error) {
-	devices, err := os.ReadDir("/sys/block")
-	if err != nil {
-		return "", fmt.Errorf("could not read /sys/block: %w", err)
-	}
-
-	for _, dev := range devices {
-		if strings.HasPrefix(dev.Name(), "nbd") {
-			pidFilePath := filepath.Join("/sys/block", dev.Name(), "pid")
-			_, err := os.ReadFile(pidFilePath)
-			if os.IsNotExist(err) {
-				return filepath.Join("/dev/", dev.Name()), nil
-			} else if err != nil {
-				return "", err
-			}
-		}
-	}
-
-	return "", fmt.Errorf("no free NBD devices found")
-}
-
-func setupLogicalVolume(ctx context.Context, logger *zap.Logger, devicePath string, lvm *LVMOptions) error {
-	logger.Info("Creating physical volume")
-
-	err := execCommand(ctx, "/sbin/pvcreate", "-v", "-Zn", devicePath)
-	if err != nil {
-		return fmt.Errorf("could not run pvcreate: %w", err)
-	}
-
-	logger.Info("Creating volume group")
-
-	err = execCommand(ctx, "/sbin/vgcreate", "-v", lvm.VolumeGroup, devicePath)
-	if err != nil {
-		return fmt.Errorf("could not run pvcreate: %w", err)
-	}
-
-	logger.Info("Creating logical volume")
-
-	err = execCommand(ctx, "/sbin/lvcreate", "-v", "-Zn", "-n", lvm.LogicalVolume, "-l", "100%FREE", lvm.VolumeGroup)
-	if err != nil {
-		return fmt.Errorf("could not run pvcreate: %w", err)
-	}
-
-	return nil
-}
-
-func activateLogicalVolume(ctx context.Context, logger *zap.Logger, lvm *LVMOptions) error {
-	logger.Info("Activating logical volume")
-
-	err := execCommand(ctx, "/sbin/lvchange", "-v", "-a", "y", lvm.VolumeGroup)
-	if err != nil {
-		return fmt.Errorf("could not run lvchange: %w", err)
-	}
-
-	return nil
-}
-
-func deactivateLogicalVolume(ctx context.Context, logger *zap.Logger, lvm *LVMOptions) error {
-	logger.Info("Deactivating logical volume")
-
-	err := execCommand(ctx, "/sbin/lvchange", "-v", "-a", "n", lvm.VolumeGroup)
-	if err != nil {
-		return fmt.Errorf("could not run lvchange: %w", err)
-	}
-
-	return nil
-}
-
 func startReadyzServer(ctx context.Context, logger *zap.Logger) error {
 	http.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
 		if isReady {
@@ -379,8 +336,76 @@ func startReadyzServer(ctx context.Context, logger *zap.Logger) error {
 	return nil
 }
 
+func findNextFreeNBDDevice() (string, error) {
+	devices, err := os.ReadDir("/sys/block")
+	if err != nil {
+		return "", fmt.Errorf("could not read /sys/block: %w", err)
+	}
+
+	for _, dev := range devices {
+		if strings.HasPrefix(dev.Name(), "nbd") {
+			pidFilePath := filepath.Join("/sys/block", dev.Name(), "pid")
+			_, err := os.ReadFile(pidFilePath)
+			if os.IsNotExist(err) {
+				return filepath.Join("/dev/", dev.Name()), nil
+			} else if err != nil {
+				return "", err
+			}
+		}
+	}
+
+	return "", fmt.Errorf("no free NBD devices found")
+}
+
+func createLogicalVolume(ctx context.Context, logger *zap.Logger, devicePath string, lvm *LVMOptions) error {
+	logger.Info("Creating physical volume")
+
+	err := execCommand(ctx, "/sbin/pvcreate", "-v", devicePath)
+	if err != nil {
+		return fmt.Errorf("could not run pvcreate: %w", err)
+	}
+
+	logger.Info("Creating volume group")
+
+	err = execCommand(ctx, "/sbin/vgcreate", "-v", lvm.VolumeGroup, devicePath)
+	if err != nil {
+		return fmt.Errorf("could not run vgcreate: %w", err)
+	}
+
+	logger.Info("Creating logical volume")
+
+	err = execCommand(ctx, "/sbin/lvcreate", "-v", "-an", "-n", lvm.LogicalVolume, "-l", "100%FREE", lvm.VolumeGroup)
+	if err != nil {
+		return fmt.Errorf("could not run lvcreate: %w", err)
+	}
+
+	return nil
+}
+
+func activateLogicalVolume(ctx context.Context, logger *zap.Logger, lvm *LVMOptions) error {
+	logger.Info("Activating logical volume")
+
+	err := execCommand(ctx, "/sbin/lvchange", "-v", "-ay", lvm.VolumeGroup)
+	if err != nil {
+		return fmt.Errorf("could not run lvchange: %w", err)
+	}
+
+	return nil
+}
+
+func deactivateLogicalVolume(ctx context.Context, logger *zap.Logger, lvm *LVMOptions) error {
+	logger.Info("Deactivating logical volume")
+
+	err := execCommand(ctx, "/sbin/lvchange", "-v", "-an", lvm.VolumeGroup)
+	if err != nil {
+		return fmt.Errorf("could not run lvchange: %w", err)
+	}
+
+	return nil
+}
+
 func execCommand(ctx context.Context, name string, arg ...string) error {
-	cmdCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	cmdCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	cmd := exec.Command(name, arg...)

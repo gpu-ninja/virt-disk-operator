@@ -263,6 +263,12 @@ func main() {
 	}
 
 	logger.Info(green("Virtual disk is successfully created and available as a block device"))
+
+	logger.Info("Deleting example resources")
+
+	if err := deleteExampleResources(); err != nil {
+		logger.Fatal(red("Failed to delete example resources"), zap.Error(err))
+	}
 }
 
 func buildOperatorImage(buildContextPath, relDockerfilePath, image string) error {
@@ -315,6 +321,14 @@ func installOperator(configDir string) error {
 
 func createExampleResources(examplesDir string) error {
 	cmd := exec.Command("kapp", "deploy", "-y", "-a", "virt-disk-operator-examples", "-f", examplesDir)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	return cmd.Run()
+}
+
+func deleteExampleResources() error {
+	cmd := exec.Command("kapp", "delete", "-y", "-a", "virt-disk-operator-examples")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 

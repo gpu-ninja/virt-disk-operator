@@ -322,6 +322,9 @@ done
 			Name:      "modules",
 			MountPath: "/lib/modules",
 			ReadOnly:  true,
+		}, {
+			Name:      "dev",
+			MountPath: "/dev",
 		}},
 	}}
 
@@ -341,16 +344,11 @@ done
 				`
 if dmsetup ls | grep "${NAME}" >/dev/null; then
   echo 'Removing existing devmapper device'
-  /sbin/dmsetup remove -v -f "${NAME}" 
-fi
+  /sbin/dmsetup remove -v -f "${NAME}"
 
-if [ -d "/dev/${VG_NAME}" ]; then
-  echo 'Removing volume group dev nodes'
-  rm -rf "/dev/${VG_NAME}"
+  echo 'Waiting for udev to settle'
+  udevadm settle
 fi
-
-echo 'Waiting for udev to settle'
-udevadm settle
 `,
 			},
 			Env: []corev1.EnvVar{{
@@ -369,6 +367,12 @@ udevadm settle
 			}, {
 				Name:      "udev",
 				MountPath: "/run/udev",
+			}, {
+				Name:      "lvmrundir",
+				MountPath: "/run/lvm",
+			}, {
+				Name:      "lvmlockdir",
+				MountPath: "/run/lock/lvm",
 			}},
 		})
 
@@ -417,6 +421,12 @@ udevadm settle
 						}, {
 							Name:      "udev",
 							MountPath: "/run/udev",
+						}, {
+							Name:      "lvmrundir",
+							MountPath: "/run/lvm",
+						}, {
+							Name:      "lvmlockdir",
+							MountPath: "/run/lock/lvm",
 						}},
 						ReadinessProbe: &corev1.Probe{
 							ProbeHandler: corev1.ProbeHandler{
@@ -435,6 +445,7 @@ udevadm settle
 						VolumeSource: corev1.VolumeSource{
 							HostPath: &corev1.HostPathVolumeSource{
 								Path: "/dev",
+								Type: ptr.To(corev1.HostPathDirectory),
 							},
 						},
 					}, {
@@ -442,6 +453,7 @@ udevadm settle
 						VolumeSource: corev1.VolumeSource{
 							HostPath: &corev1.HostPathVolumeSource{
 								Path: "/lib/modules",
+								Type: ptr.To(corev1.HostPathDirectory),
 							},
 						},
 					}, {
@@ -449,6 +461,7 @@ udevadm settle
 						VolumeSource: corev1.VolumeSource{
 							HostPath: &corev1.HostPathVolumeSource{
 								Path: "/run/udev",
+								Type: ptr.To(corev1.HostPathDirectory),
 							},
 						},
 					}, {
@@ -456,6 +469,23 @@ udevadm settle
 						VolumeSource: corev1.VolumeSource{
 							HostPath: &corev1.HostPathVolumeSource{
 								Path: vdisk.Spec.HostPath,
+								Type: ptr.To(corev1.HostPathDirectoryOrCreate),
+							},
+						},
+					}, {
+						Name: "lvmrundir",
+						VolumeSource: corev1.VolumeSource{
+							HostPath: &corev1.HostPathVolumeSource{
+								Path: "/run/lvm",
+								Type: ptr.To(corev1.HostPathDirectoryOrCreate),
+							},
+						},
+					}, {
+						Name: "lvmlockdir",
+						VolumeSource: corev1.VolumeSource{
+							HostPath: &corev1.HostPathVolumeSource{
+								Path: "/run/lock/lvm",
+								Type: ptr.To(corev1.HostPathDirectoryOrCreate),
 							},
 						},
 					}},
