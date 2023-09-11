@@ -18,11 +18,9 @@
 package disk
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"os"
@@ -388,17 +386,13 @@ func activateLogicalVolume(ctx context.Context, logger *zap.Logger, lvm *LVMOpti
 	logger.Info("Activating logical volume")
 
 	err := retry.Do(func() error {
-		output, err := execCommandWithOutput(ctx, "/sbin/lvchange", "-v", "-ay", lvm.VolumeGroup)
+		err := execCommand(ctx, "/sbin/lvchange", "-v", "-ay", lvm.VolumeGroup)
 		if err != nil {
-			if strings.Contains(string(output), "Device or resource busy") {
-				return err
-			}
-
-			return retry.Unrecoverable(err)
+			return err
 		}
 
 		return nil
-	})
+	}, retry.Attempts(5), retry.Delay(5*time.Second))
 	if err != nil {
 		return fmt.Errorf("could not run lvchange: %w", err)
 	}
@@ -440,30 +434,4 @@ func execCommand(ctx context.Context, name string, arg ...string) error {
 	}()
 
 	return cmd.Wait()
-}
-
-func execCommandWithOutput(ctx context.Context, name string, arg ...string) ([]byte, error) {
-	cmdCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	cmd := exec.CommandContext(cmdCtx, name, arg...)
-	cmd.Env = os.Environ()
-
-	var b bytes.Buffer
-	cmd.Stdout = io.MultiWriter(os.Stdout, &b)
-	cmd.Stderr = io.MultiWriter(os.Stderr, &b)
-
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("could not start command: %w", err)
-	}
-
-	go func() {
-		<-cmdCtx.Done()
-
-		if _, err := os.FindProcess(cmd.Process.Pid); err != nil {
-			_ = cmd.Process.Kill()
-		}
-	}()
-
-	return b.Bytes(), cmd.Wait()
 }
