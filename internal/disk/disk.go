@@ -18,6 +18,7 @@
 package disk
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -30,7 +31,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/containerd/nydus-snapshotter/pkg/utils/retry"
+	"github.com/avast/retry-go/v4"
 	"github.com/docker/go-units"
 	"github.com/gpu-ninja/qcow2"
 	"github.com/pojntfx/go-nbd/pkg/client"
@@ -354,7 +355,7 @@ func findNextFreeNBDDevice() (string, error) {
 		}
 	}
 
-	return "", fmt.Errorf("no free NBD devices found")
+	return "", fmt.Errorf("no free nbd devices found")
 }
 
 func createLogicalVolume(ctx context.Context, logger *zap.Logger, devicePath string, lvm *LVMOptions) error {
@@ -385,7 +386,18 @@ func createLogicalVolume(ctx context.Context, logger *zap.Logger, devicePath str
 func activateLogicalVolume(ctx context.Context, logger *zap.Logger, lvm *LVMOptions) error {
 	logger.Info("Activating logical volume")
 
-	err := execCommand(ctx, "/sbin/lvchange", "-v", "-ay", lvm.VolumeGroup)
+	err := retry.Do(func() error {
+		output, err := execCommandWithOutput(ctx, "/sbin/lvchange", "-v", "-ay", lvm.VolumeGroup)
+		if err != nil {
+			if strings.Contains(string(output), "Device or resource busy") {
+				return err
+			}
+
+			return retry.Unrecoverable(err)
+		}
+
+		return nil
+	})
 	if err != nil {
 		return fmt.Errorf("could not run lvchange: %w", err)
 	}
@@ -408,13 +420,14 @@ func execCommand(ctx context.Context, name string, arg ...string) error {
 	cmdCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	cmd := exec.Command(name, arg...)
+	cmd := exec.CommandContext(cmdCtx, name, arg...)
 	cmd.Env = os.Environ()
+
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
 	if err := cmd.Start(); err != nil {
-		return retry.Unrecoverable(err)
+		return fmt.Errorf("could not start command: %w", err)
 	}
 
 	go func() {
@@ -426,4 +439,30 @@ func execCommand(ctx context.Context, name string, arg ...string) error {
 	}()
 
 	return cmd.Wait()
+}
+
+func execCommandWithOutput(ctx context.Context, name string, arg ...string) ([]byte, error) {
+	cmdCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(cmdCtx, name, arg...)
+	cmd.Env = os.Environ()
+
+	var b bytes.Buffer
+	cmd.Stdout = &b
+	cmd.Stderr = &b
+
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("could not start command: %w", err)
+	}
+
+	go func() {
+		<-cmdCtx.Done()
+
+		if _, err := os.FindProcess(cmd.Process.Pid); err != nil {
+			_ = cmd.Process.Kill()
+		}
+	}()
+
+	return b.Bytes(), cmd.Wait()
 }

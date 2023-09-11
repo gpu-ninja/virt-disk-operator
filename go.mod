@@ -7,7 +7,7 @@ replace k8s.io/kube-openapi => k8s.io/kube-openapi v0.0.0-20230525220651-2546d82
 
 require (
 	github.com/adrg/xdg v0.4.0
-	github.com/containerd/nydus-snapshotter v0.11.3
+	github.com/avast/retry-go/v4 v4.5.0
 	github.com/docker/go-units v0.5.0
 	github.com/gpu-ninja/operator-utils v0.4.3
 	github.com/gpu-ninja/qcow2 v0.1.6
