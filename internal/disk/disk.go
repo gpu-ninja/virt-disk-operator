@@ -22,6 +22,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -449,8 +450,8 @@ func execCommandWithOutput(ctx context.Context, name string, arg ...string) ([]b
 	cmd.Env = os.Environ()
 
 	var b bytes.Buffer
-	cmd.Stdout = &b
-	cmd.Stderr = &b
+	cmd.Stdout = io.MultiWriter(os.Stdout, &b)
+	cmd.Stderr = io.MultiWriter(os.Stderr, &b)
 
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("could not start command: %w", err)
