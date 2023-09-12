@@ -379,6 +379,43 @@ fi
 		args = append(args, "--lv="+vdisk.Spec.LVM.LogicalVolume, "--vg="+vdisk.Spec.LVM.VolumeGroup)
 	}
 
+	virtDiskContainer := corev1.Container{
+		Name:  "virt-disk",
+		Image: image,
+		Args:  args,
+		SecurityContext: &corev1.SecurityContext{
+			Privileged: ptr.To(true),
+		},
+		VolumeMounts: []corev1.VolumeMount{{
+			Name:      "data",
+			MountPath: vdisk.Spec.HostPath,
+		}, {
+			Name:      "dev",
+			MountPath: "/dev",
+		}, {
+			Name:      "udev",
+			MountPath: "/run/udev",
+		}, {
+			Name:      "lvmrundir",
+			MountPath: "/run/lvm",
+		}, {
+			Name:      "lvmlockdir",
+			MountPath: "/run/lock/lvm",
+		}},
+		ReadinessProbe: &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{
+				HTTPGet: &corev1.HTTPGetAction{
+					Path:   "/readyz",
+					Port:   intstr.FromInt(8081),
+					Scheme: corev1.URISchemeHTTP,
+				},
+			},
+			InitialDelaySeconds: 5,
+			PeriodSeconds:       10,
+		},
+		Resources: vdisk.Spec.Resources,
+	}
+
 	ds := appsv1.DaemonSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "virt-disk-" + vdisk.Name,
@@ -405,41 +442,7 @@ fi
 					TerminationGracePeriodSeconds: ptr.To(int64(10)),
 					NodeSelector:                  vdisk.Spec.NodeSelector,
 					InitContainers:                initContainers,
-					Containers: []corev1.Container{{
-						Name:  "virt-disk",
-						Image: image,
-						Args:  args,
-						SecurityContext: &corev1.SecurityContext{
-							Privileged: ptr.To(true),
-						},
-						VolumeMounts: []corev1.VolumeMount{{
-							Name:      "data",
-							MountPath: vdisk.Spec.HostPath,
-						}, {
-							Name:      "dev",
-							MountPath: "/dev",
-						}, {
-							Name:      "udev",
-							MountPath: "/run/udev",
-						}, {
-							Name:      "lvmrundir",
-							MountPath: "/run/lvm",
-						}, {
-							Name:      "lvmlockdir",
-							MountPath: "/run/lock/lvm",
-						}},
-						ReadinessProbe: &corev1.Probe{
-							ProbeHandler: corev1.ProbeHandler{
-								HTTPGet: &corev1.HTTPGetAction{
-									Path:   "/readyz",
-									Port:   intstr.FromInt(8081),
-									Scheme: corev1.URISchemeHTTP,
-								},
-							},
-							InitialDelaySeconds: 5,
-							PeriodSeconds:       10,
-						},
-					}},
+					Containers:                    []corev1.Container{virtDiskContainer},
 					Volumes: []corev1.Volume{{
 						Name: "dev",
 						VolumeSource: corev1.VolumeSource{

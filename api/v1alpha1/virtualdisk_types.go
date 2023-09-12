@@ -18,6 +18,7 @@
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -57,6 +58,8 @@ type VirtualDiskSpec struct {
 	// NodeSelector allows specifying which nodes a virtual disk device should be created on.
 	// If not specified, the virtual disk device will be created on all nodes.
 	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+	// Resources allows specifying the resource requirements for the virtual disk container.
+	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
 }
 
 type VirtualDiskStatus struct {
