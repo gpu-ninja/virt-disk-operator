@@ -388,7 +388,7 @@ func activateLogicalVolume(ctx context.Context, logger *zap.Logger, lvm *LVMOpti
 	err := retry.Do(func() error {
 		err := execCommand(ctx, "/sbin/lvchange", "-v", "-ay", lvm.VolumeGroup)
 		if err != nil {
-			if err := execCommand(ctx, "/usr/sbin/dmsetup", "remove", lvm.VolumeGroup); err != nil {
+			if err := execCommand(ctx, "/usr/sbin/dmsetup", "remove", lvmName(lvm)); err != nil {
 				logger.Error("Could not reset devmapper device", zap.Error(err))
 			}
 
@@ -438,4 +438,12 @@ func execCommand(ctx context.Context, name string, arg ...string) error {
 	}()
 
 	return cmd.Wait()
+}
+
+func lvmName(lvm *LVMOptions) string {
+	lvmEscape := func(input string) string {
+		return strings.ReplaceAll(input, "-", "--")
+	}
+
+	return fmt.Sprintf("%s-%s", lvmEscape(lvm.VolumeGroup), lvmEscape(lvm.LogicalVolume))
 }

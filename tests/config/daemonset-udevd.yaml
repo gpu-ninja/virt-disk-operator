@@ -55,18 +55,17 @@ spec:
                 - udevadm settle --timeout=10
           resources:
             requests:
-              memory: "16Mi"
-              cpu: "10m"
+              memory: 16Mi
+              cpu: 10m
             limits:
-              memory: "32Mi"
-              cpu: "50m"
+              memory: 16Mi
           volumeMounts:
             - name: dev
               mountPath: /dev
             - name: run
               mountPath: /run
         - name: devsyncer
-          image: ghcr.io/gpu-ninja/devsyncer:v0.1.1
+          image: ghcr.io/gpu-ninja/devsyncer:v0.1.2
           args:
             - --source=/host/dev
             - --destination=/dev
@@ -78,11 +77,10 @@ spec:
             privileged: true
           resources:
             requests:
-              memory: "16Mi"
-              cpu: "10m"
+              memory: 16Mi
+              cpu: 10m
             limits:
-              memory: "32Mi"
-              cpu: "50m"
+              memory: 16Mi
           volumeMounts:
             - name: dev
               mountPath: /dev
