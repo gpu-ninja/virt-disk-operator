@@ -4,7 +4,7 @@ metadata:
   name: virt-disk-operator-test
 servers: 1
 agents: 0
-image: ghcr.io/gpu-ninja/k3s-debian:v1.27.4
+image: ghcr.io/gpu-ninja/k3s-debian:latest
 options:
   runtime:
     hostPidMode: true

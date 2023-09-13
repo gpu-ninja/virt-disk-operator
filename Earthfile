@@ -7,20 +7,22 @@ docker-all:
 
 docker:
   ARG TARGETARCH
-  ARG VERSION
-  FROM gcr.io/distroless/base-debian12:nonroot
-  WORKDIR /
+  FROM debian:bookworm-slim
+  RUN apt update \
+    && apt install -y udev lvm2 kmod
   COPY LICENSE /usr/local/share/virt-disk-operator/
   COPY (+virt-disk-operator/virt-disk-operator --GOARCH=${TARGETARCH}) /manager
-  USER 65532:65532
   ENTRYPOINT ["/manager"]
+  ARG VERSION
   SAVE IMAGE --push ghcr.io/gpu-ninja/virt-disk-operator:${VERSION}
   SAVE IMAGE --push ghcr.io/gpu-ninja/virt-disk-operator:latest
 
 bundle:
   FROM +tools
   COPY config ./config
-  RUN kbld -f config > virt-disk-operator.yaml
+  COPY hack ./hack
+  ARG VERSION
+  RUN ytt --data-value version=${VERSION} -f config -f hack/set-version.yaml | kbld -f - > virt-disk-operator.yaml
   SAVE ARTIFACT ./virt-disk-operator.yaml AS LOCAL dist/virt-disk-operator.yaml
 
 virt-disk-operator:

@@ -272,8 +272,8 @@ func main() {
 }
 
 func buildOperatorImage(buildContextPath, relDockerfilePath, image string) error {
-	cmd := exec.Command("docker", "build", "-t", image, "-f",
-		filepath.Join(buildContextPath, relDockerfilePath), buildContextPath)
+	cmd := exec.Command("earthly", "+docker", "--VERSION=latest-dev")
+	cmd.Dir = buildContextPath
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
@@ -305,7 +305,7 @@ func loadOperatorImage(clusterName, imageName string) error {
 }
 
 func installOperator(configDir string) error {
-	cmd := exec.Command("ytt", "-f", "config", "-f", configDir)
+	cmd := exec.Command("ytt", "--data-value", "version=latest-dev", "-f", "../hack/set-version.yaml", "-f", "config", "-f", configDir)
 	patchedYAML, err := cmd.CombinedOutput()
 	if err != nil {
 		return err
