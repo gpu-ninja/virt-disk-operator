@@ -29,7 +29,7 @@ virt-disk-operator:
   COPY go.mod go.sum ./
   RUN go mod download
   COPY . .
-  RUN CGO_ENABLED=0 go build -ldflags '-s' -o virt-disk-operator cmd/virt-disk-operator/main.go
+  RUN go build -ldflags '-s' -o virt-disk-operator cmd/virt-disk-operator/main.go
   SAVE ARTIFACT ./virt-disk-operator AS LOCAL dist/virt-disk-operator-${GOOS}-${GOARCH}
 
 generate:
