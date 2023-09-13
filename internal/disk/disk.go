@@ -84,7 +84,7 @@ func MountVirtualDisk(ctx context.Context, logger *zap.Logger, opts *MountOption
 	g.Go(func() error {
 		<-readyForConnCh
 
-		return connectToServer(ctx, logger, opts, createImage)
+		return connectToServer(ctx, logger, opts)
 	})
 
 	if err := g.Wait(); err != nil {
@@ -96,8 +96,7 @@ func MountVirtualDisk(ctx context.Context, logger *zap.Logger, opts *MountOption
 	return nil
 }
 
-func connectToServer(ctx context.Context, logger *zap.Logger, opts *MountOptions,
-	createImage bool) error {
+func connectToServer(ctx context.Context, logger *zap.Logger, opts *MountOptions) error {
 	devicePath, err := findNextFreeNBDDevice()
 	if err != nil {
 		return fmt.Errorf("could not find free nbd device: %w", err)
@@ -136,38 +135,45 @@ func connectToServer(ctx context.Context, logger *zap.Logger, opts *MountOptions
 
 	logger.Info("Connecting to nbd server", zap.String("socketPath", opts.SocketPath))
 
-	if err := client.Connect(conn, f, &client.Options{
+	errorCh := make(chan error, 1)
+
+	clientOpts := &client.Options{
 		ExportName: "virt-disk",
 		BlockSize:  uint32(client.MaximumBlockSize),
 		OnConnected: func() {
 			logger.Info("Connected to nbd server")
 
 			if opts.LVM != nil {
-				if createImage {
-					logger.Info("Setting up logical volume",
+				logger.Info("Checking if device already contains an lvm volume")
+
+				err := execCommand(ctx, "/sbin/pvck", "-v", devicePath)
+				if err != nil {
+					logger.Info("No lvm volume found, creating logical volume",
 						zap.String("volumeGroup", opts.LVM.VolumeGroup),
 						zap.String("logicalVolume", opts.LVM.LogicalVolume))
 
 					if err := createLogicalVolume(ctx, logger, devicePath, opts.LVM); err != nil {
-						logger.Error("Failed to create logical volume", zap.Error(err))
+						errorCh <- fmt.Errorf("could not create logical volume: %w", err)
 
 						return
 					}
 
+					logger.Info("Activating logical volume")
+
 					if err := activateLogicalVolume(ctx, logger, opts.LVM); err != nil {
-						logger.Error("Failed to activate logical volume", zap.Error(err))
+						errorCh <- fmt.Errorf("could not activate logical volume: %w", err)
 
 						return
 					}
 
 					logger.Info("Logical volume setup complete")
 				} else {
-					logger.Info("Activating logical volume",
+					logger.Info("Device contains valid lvm volume, activating logical volume",
 						zap.String("volumeGroup", opts.LVM.VolumeGroup),
 						zap.String("logicalVolume", opts.LVM.LogicalVolume))
 
 					if err := activateLogicalVolume(ctx, logger, opts.LVM); err != nil {
-						logger.Error("Failed to activate logical volume", zap.Error(err))
+						errorCh <- fmt.Errorf("could not activate logical volume: %w", err)
 
 						return
 					}
@@ -178,8 +184,28 @@ func connectToServer(ctx context.Context, logger *zap.Logger, opts *MountOptions
 				isReady = true
 			}
 		},
-	}); err != nil {
-		return fmt.Errorf("could not connect to nbd server: %w", err)
+	}
+
+	go func() {
+		defer close(errorCh)
+
+		err := retry.Do(func() error {
+			if err := client.Connect(conn, f, clientOpts); err != nil {
+				logger.Warn("Could not connect to nbd server", zap.Error(err))
+
+				return err
+			}
+
+			return nil
+		})
+		if err != nil {
+			errorCh <- fmt.Errorf("could not connect to nbd server: %w", err)
+		}
+	}()
+
+	err, ok := <-errorCh
+	if ok {
+		return err
 	}
 
 	return nil
@@ -388,15 +414,17 @@ func activateLogicalVolume(ctx context.Context, logger *zap.Logger, lvm *LVMOpti
 	err := retry.Do(func() error {
 		err := execCommand(ctx, "/sbin/lvchange", "-v", "-ay", lvm.VolumeGroup)
 		if err != nil {
+			logger.Warn("Could not activate logical volume", zap.Error(err))
+
 			if err := execCommand(ctx, "/usr/sbin/dmsetup", "remove", lvmName(lvm)); err != nil {
-				logger.Error("Could not reset devmapper device", zap.Error(err))
+				logger.Warn("Could not reset devmapper device", zap.Error(err))
 			}
 
 			return err
 		}
 
 		return nil
-	}, retry.Attempts(5), retry.Delay(5*time.Second))
+	})
 	if err != nil {
 		return fmt.Errorf("could not run lvchange: %w", err)
 	}
