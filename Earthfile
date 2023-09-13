@@ -8,7 +8,7 @@ docker-all:
 docker:
   ARG TARGETARCH
   ARG VERSION
-  FROM gcr.io/distroless/static:nonroot
+  FROM gcr.io/distroless/base-debian12:nonroot
   WORKDIR /
   COPY LICENSE /usr/local/share/virt-disk-operator/
   COPY (+virt-disk-operator/virt-disk-operator --GOARCH=${TARGETARCH}) /manager
