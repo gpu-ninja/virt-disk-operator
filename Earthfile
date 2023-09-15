@@ -37,8 +37,9 @@ virt-disk-operator:
 generate:
   FROM +tools
   COPY . .
-  RUN controller-gen object:headerFile="hack/boilerplate.go.txt" paths="./..." \
-    && controller-gen rbac:roleName=virt-disk-manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+  RUN controller-gen object:headerFile="hack/boilerplate.go.txt" paths="./..."
+  RUN controller-gen crd:generateEmbeddedObjectMeta=true rbac:roleName=virt-disk-manager-role webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+  SAVE ARTIFACT ./api/v1alpha1/zz_generated.deepcopy.go AS LOCAL api/v1alpha1/zz_generated.deepcopy.go
   SAVE ARTIFACT ./config/crd/bases AS LOCAL config/crd/bases
   SAVE ARTIFACT ./config/rbac/role.yaml AS LOCAL config/rbac/role.yaml
 
