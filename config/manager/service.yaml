@@ -3,10 +3,12 @@ kind: Service
 metadata:
   name: virt-disk-operator-metrics
   namespace: virt-disk-operator
+  labels:
+    app.kubernetes.io/name: virt-disk-operator
+    app.kubernetes.io/component: metrics
 spec:
   selector:
     app.kubernetes.io/name: virt-disk-operator
-    app.kubernetes.io/component: metrics
   ports:
     - name: metrics
       protocol: TCP
