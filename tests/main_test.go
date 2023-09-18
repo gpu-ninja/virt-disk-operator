@@ -15,19 +15,18 @@
  * limitations under the License.
  */
 
-package main
+package main_test
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"testing"
 	"time"
 
-	"github.com/fatih/color"
-	"go.uber.org/zap"
+	"github.com/stretchr/testify/require"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -41,74 +40,26 @@ import (
 	"k8s.io/utils/ptr"
 )
 
-var (
-	red   = color.New(color.FgRed).SprintFunc()
-	green = color.New(color.FgGreen).SprintFunc()
-)
+func TestOperator(t *testing.T) {
+	t.Log("Creating example resources")
 
-func main() {
-	logger, err := zap.NewDevelopment()
-	if err != nil {
-		panic(err)
-	}
+	rootDir := os.Getenv("ROOT_DIR")
 
-	pwd, err := os.Getwd()
-	if err != nil {
-		logger.Fatal(red("Failed to get current working directory"), zap.Error(err))
-	}
+	err := createExampleResources(filepath.Join(rootDir, "examples"))
+	require.NoError(t, err)
 
-	logger.Info("Building operator image")
+	t.Cleanup(func() {
+		t.Log("Deleting example resources")
 
-	buildContextPath := filepath.Clean(filepath.Join(pwd, ".."))
-
-	imageName := "ghcr.io/gpu-ninja/virt-disk-operator:latest-dev"
-	if err := buildOperatorImage(buildContextPath, "Dockerfile", imageName); err != nil {
-		logger.Fatal(red("Failed to build operator image"), zap.Error(err))
-	}
-
-	logger.Info("Creating k3d cluster")
-
-	clusterName := "virt-disk-operator-test"
-	configPath := filepath.Join(pwd, "k3d-config.yaml")
-	if err := createK3dCluster(clusterName, configPath); err != nil {
-		logger.Fatal(red("Failed to create k3d cluster"), zap.Error(err))
-	}
-	defer func() {
-		logger.Info("Deleting k3d cluster")
-
-		if err := deleteK3dCluster(clusterName); err != nil {
-			logger.Fatal(red("Failed to delete k3d cluster"), zap.Error(err))
-		}
-	}()
-
-	logger.Info("Loading operator image into k3d cluster")
-
-	if err := loadOperatorImage(clusterName, imageName); err != nil {
-		logger.Fatal(red("Failed to load operator image"), zap.Error(err))
-	}
-
-	logger.Info("Installing operator")
-
-	if err := installOperator(filepath.Clean(filepath.Join(pwd, "../config"))); err != nil {
-		logger.Fatal(red("Failed to install operator"), zap.Error(err))
-	}
-
-	logger.Info("Creating example resources")
-
-	if err := createExampleResources(filepath.Join(pwd, "../examples")); err != nil {
-		logger.Fatal(red("Failed to create example resources"), zap.Error(err))
-	}
+		_ = deleteExampleResources()
+	})
 
 	kubeconfig := filepath.Join(clientcmd.RecommendedConfigDir, "config")
 	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
-	if err != nil {
-		logger.Fatal(red("Failed to build kubeconfig"), zap.Error(err))
-	}
+	require.NoError(t, err)
 
 	dynClient, err := dynamic.NewForConfig(config)
-	if err != nil {
-		logger.Fatal(red("Failed to create kubernetes client"), zap.Error(err))
-	}
+	require.NoError(t, err)
 
 	diskGVR := schema.GroupVersionResource{
 		Group:    "virt-disk.gpu-ninja.com",
@@ -116,7 +67,7 @@ func main() {
 		Resource: "virtualdisks",
 	}
 
-	logger.Info("Waiting for virtual disk to become ready")
+	t.Log("Waiting for virtual disk to become ready")
 
 	ctx := context.Background()
 	err = wait.PollUntilContextTimeout(ctx, 5*time.Second, 5*time.Minute, true, func(ctx context.Context) (bool, error) {
@@ -131,27 +82,22 @@ func main() {
 		}
 
 		if !ok || phase != "Ready" {
-			logger.Info("Virtual disk not ready")
+			t.Log("Virtual disk not ready")
 
 			return false, nil
 		}
 
 		return true, nil
 	})
-	if err != nil {
-		logger.Fatal(red("Failed to wait for virtual disk to become ready"), zap.Error(err))
-	}
+	require.NoError(t, err, "failed to wait for virtual disk to become ready")
 
-	logger.Info("Checking that the virtual disk is available as a block device")
+	t.Log("Checking that the virtual disk is available as a block device")
 
 	clientset, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		logger.Fatal(red("Failed to create kubernetes client"), zap.Error(err))
-	}
+	require.NoError(t, err)
 
-	if err := checkForVirtualDisk(ctx, clientset); err != nil {
-		logger.Fatal(red("Failed to check for virtual disk"), zap.Error(err))
-	}
+	err = checkForVirtualDisk(ctx, clientset)
+	require.NoError(t, err)
 
 	err = wait.PollUntilContextTimeout(ctx, 5*time.Second, 5*time.Minute, true, func(ctx context.Context) (bool, error) {
 		job, err := clientset.BatchV1().Jobs("default").Get(ctx, "check-virtual-disk", metav1.GetOptions{})
@@ -173,17 +119,14 @@ func main() {
 
 		return false, nil
 	})
-	if err != nil {
-		logger.Fatal(red("Checking for virtual disk block device failed"), zap.Error(err))
-	}
+	require.NoError(t, err, "checking for virtual disk block device failed")
 
-	logger.Info("Deleting virtual disk")
+	t.Log("Deleting virtual disk")
 
-	if err := dynClient.Resource(diskGVR).Namespace("default").Delete(ctx, "demo", metav1.DeleteOptions{}); err != nil {
-		logger.Fatal(red("Failed to delete virtual disk"), zap.Error(err))
-	}
+	err = dynClient.Resource(diskGVR).Namespace("default").Delete(ctx, "demo", metav1.DeleteOptions{})
+	require.NoError(t, err)
 
-	logger.Info("Waiting for virtual disk to be deleted")
+	t.Log("Waiting for virtual disk to be deleted")
 
 	err = wait.PollUntilContextTimeout(ctx, 5*time.Second, 5*time.Minute, true, func(ctx context.Context) (bool, error) {
 		_, err := dynClient.Resource(diskGVR).Namespace("default").Get(ctx, "demo", metav1.GetOptions{})
@@ -195,19 +138,16 @@ func main() {
 
 		return false, nil
 	})
-	if err != nil {
-		logger.Fatal(red("Failed to wait for virtual disk to be deleted"), zap.Error(err))
-	}
+	require.NoError(t, err, "failed to wait for virtual disk to be deleted")
 
-	logger.Info("Recreating virtual disk")
+	t.Log("Recreating virtual disk")
 
 	// Since the underlying qcow2 file is still present, we can recreate the virtual disk
 	// with the same data
-	if err := createExampleResources(filepath.Join(pwd, "../examples")); err != nil {
-		logger.Fatal(red("Failed to create example resources"), zap.Error(err))
-	}
+	err = createExampleResources(filepath.Join(rootDir, "examples"))
+	require.NoError(t, err)
 
-	logger.Info("Waiting for virtual disk to become ready")
+	t.Log("Waiting for virtual disk to become ready")
 
 	err = wait.PollUntilContextTimeout(ctx, 5*time.Second, 5*time.Minute, true, func(ctx context.Context) (bool, error) {
 		vdisk, err := dynClient.Resource(diskGVR).Namespace("default").Get(ctx, "demo", metav1.GetOptions{})
@@ -221,22 +161,19 @@ func main() {
 		}
 
 		if !ok || phase != "Ready" {
-			logger.Info("Virtual disk not ready")
+			t.Log("Virtual disk not ready")
 
 			return false, nil
 		}
 
 		return true, nil
 	})
-	if err != nil {
-		logger.Fatal(red("Failed to wait for virtual disk to become ready"), zap.Error(err))
-	}
+	require.NoError(t, err, "failed to wait for virtual disk to become ready")
 
-	logger.Info("Checking that the virtual disk is available as a block device")
+	t.Log("Checking that the virtual disk is available as a block device")
 
-	if err := checkForVirtualDisk(ctx, clientset); err != nil {
-		logger.Fatal(red("Failed to check for virtual disk"), zap.Error(err))
-	}
+	err = checkForVirtualDisk(ctx, clientset)
+	require.NoError(t, err)
 
 	err = wait.PollUntilContextTimeout(ctx, 5*time.Second, 5*time.Minute, true, func(ctx context.Context) (bool, error) {
 		job, err := clientset.BatchV1().Jobs("default").Get(ctx, "check-virtual-disk", metav1.GetOptions{})
@@ -258,65 +195,7 @@ func main() {
 
 		return false, nil
 	})
-	if err != nil {
-		logger.Fatal(red("Checking for virtual disk block device failed"), zap.Error(err))
-	}
-
-	logger.Info(green("Virtual disk is successfully created and available as a block device"))
-
-	logger.Info("Deleting example resources")
-
-	if err := deleteExampleResources(); err != nil {
-		logger.Fatal(red("Failed to delete example resources"), zap.Error(err))
-	}
-}
-
-func buildOperatorImage(buildContextPath, relDockerfilePath, image string) error {
-	cmd := exec.Command("earthly", "+docker", "--VERSION=latest-dev")
-	cmd.Dir = buildContextPath
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	return cmd.Run()
-}
-
-func createK3dCluster(clusterName, configPath string) error {
-	cmd := exec.Command("k3d", "cluster", "create", "-c", configPath, "--wait")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	return cmd.Run()
-}
-
-func deleteK3dCluster(clusterName string) error {
-	cmd := exec.Command("k3d", "cluster", "delete", clusterName)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	return cmd.Run()
-}
-
-func loadOperatorImage(clusterName, imageName string) error {
-	cmd := exec.Command("k3d", "image", "import", "-c", clusterName, imageName)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	return cmd.Run()
-}
-
-func installOperator(configDir string) error {
-	cmd := exec.Command("ytt", "--data-value", "version=latest-dev", "-f", "../hack/set-version.yaml", "-f", "config", "-f", configDir)
-	patchedYAML, err := cmd.CombinedOutput()
-	if err != nil {
-		return err
-	}
-
-	cmd = exec.Command("kapp", "deploy", "-y", "-a", "virt-disk-operator", "-f", "-")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Stdin = bytes.NewReader(patchedYAML)
-
-	return cmd.Run()
+	require.NoError(t, err, "checking for virtual disk block device failed")
 }
 
 func createExampleResources(examplesDir string) error {

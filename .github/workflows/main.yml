@@ -24,12 +24,15 @@ jobs:
     - name: Lint
       run: earthly +lint
 
+    - name: Build
+      run: earthly +docker --VERSION=${{ github.ref_name }}
+
     - name: Test
       run: earthly +test
 
-    - name: Build
-      run: earthly +docker --VERSION=${{ github.ref_name }}
-    
+    - name: Integration Test
+      run: earthly -P +integration-test
+
   push:
     needs: build-and-test
     if: startsWith(github.ref, 'refs/tags/')
