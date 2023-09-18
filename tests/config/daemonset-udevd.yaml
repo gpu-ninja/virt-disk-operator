@@ -6,9 +6,6 @@ apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: udevd
-  annotations:
-    kapp.k14s.io/change-group: "koopt.gpu-ninja.com/udevd"
-    kapp.k14s.io/change-rule: "upsert after upserting koopt.gpu-ninja.com/hostdirs"
 spec:
   selector:
     matchLabels:

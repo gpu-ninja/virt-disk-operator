@@ -61,11 +61,18 @@ test:
   RUN go test -coverprofile=coverage.out -v ./...
   SAVE ARTIFACT ./coverage.out AS LOCAL coverage.out
 
+modules:
+  LOCALLY
+  SAVE ARTIFACT /lib/modules
+
 integration-test:
   FROM +tools
+  COPY +modules/modules /lib/modules
   COPY . .
   WITH DOCKER --allow-privileged --load ghcr.io/gpu-ninja/virt-disk-operator:latest-dev=(+docker --VERSION=latest-dev)
-    RUN SKIP_BUILD=1 ./tests/integration.sh
+    RUN mkdir -p /host/dev \
+      && mount -t devtmpfs devtmpfs /host/dev \
+      && SKIP_BUILD=1 ./tests/integration.sh
   END
 
 tools:

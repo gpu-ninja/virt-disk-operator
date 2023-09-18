@@ -20,7 +20,6 @@ package main_test
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -93,22 +92,7 @@ func TestOperator(t *testing.T) {
 
 		return true, nil
 	})
-	if err != nil {
-		virtDiskPods, err := clientset.CoreV1().Pods("default").List(ctx, metav1.ListOptions{
-			LabelSelector: "app.kubernetes.io/name=virt-disk,app.kubernetes.io/instance=demo",
-		})
-		require.NoError(t, err)
-		require.Len(t, virtDiskPods.Items, 1)
-
-		virtDiskPodLogs, err := clientset.CoreV1().Pods("default").GetLogs(virtDiskPods.Items[0].Name, &corev1.PodLogOptions{}).Stream(ctx)
-		require.NoError(t, err)
-		defer virtDiskPodLogs.Close()
-
-		_, err = io.Copy(os.Stderr, virtDiskPodLogs)
-		require.NoError(t, err)
-
-		t.Fatal(fmt.Errorf("failed to wait for virtual disk to become ready: %w", err))
-	}
+	require.NoError(t, err, "failed to wait for virtual disk to become ready")
 
 	t.Log("Checking that the virtual disk is available as a block device")
 

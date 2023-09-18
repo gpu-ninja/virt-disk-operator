@@ -38,7 +38,7 @@ fi
 
 echo 'Creating k3d cluster'
 
-k3d cluster create "${CLUSTER_NAME}" --image=ghcr.io/gpu-ninja/k3s-debian:latest --host-pid-mode --wait
+k3d cluster create "${CLUSTER_NAME}" -v /host/dev:/host/dev -v /lib/modules:/lib/modules --wait
 
 echo 'Waiting for k3s setup to complete'
 
