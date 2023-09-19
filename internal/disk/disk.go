@@ -21,22 +21,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/avast/retry-go/v4"
-	"github.com/docker/go-units"
-	"github.com/gpu-ninja/qcow2"
-	"github.com/pojntfx/go-nbd/pkg/client"
-	"github.com/pojntfx/go-nbd/pkg/server"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
+	"k8s.io/apimachinery/pkg/util/wait"
 )
 
 // LVMOptions are the options for setting up an LVM logical volume.
@@ -50,8 +47,6 @@ type LVMOptions struct {
 
 // MountOptions are the options for mounting a virtual disk device.
 type MountOptions struct {
-	// SocketPath is the path to host the NBD server on.
-	SocketPath string
 	// ImagePath is the path to the qcow2 backing image.
 	ImagePath string
 	// Size is the size of the qcow2 backing image in bytes.
@@ -64,13 +59,6 @@ var isReady bool
 
 // MountVirtualDisk mounts a virtual disk device.
 func MountVirtualDisk(ctx context.Context, logger *zap.Logger, opts *MountOptions) error {
-	var createImage bool
-	if _, err := os.Stat(opts.ImagePath); err != nil {
-		createImage = true
-	}
-
-	readyForConnCh := make(chan struct{})
-
 	g, ctx := errgroup.WithContext(ctx)
 
 	g.Go(func() error {
@@ -78,13 +66,113 @@ func MountVirtualDisk(ctx context.Context, logger *zap.Logger, opts *MountOption
 	})
 
 	g.Go(func() error {
-		return listenForConnections(ctx, logger, opts, createImage, readyForConnCh)
-	})
+		if _, err := os.Stat(opts.ImagePath); os.IsNotExist(err) {
+			logger.Info("Backing image does not exist, creating it")
 
-	g.Go(func() error {
-		<-readyForConnCh
+			if err := execCommand(ctx, "/usr/bin/qemu-img", "create", "-f", "qcow2", opts.ImagePath, strconv.FormatInt(opts.Size, 10)); err != nil {
+				return fmt.Errorf("could not create backing image: %w", err)
+			}
+		}
 
-		return connectToServer(ctx, logger, opts)
+		devicePath, err := findNextFreeNBDDevice()
+		if err != nil {
+			return fmt.Errorf("could not find free nbd device: %w", err)
+		}
+
+		logger.Info("Using NBD device", zap.String("device", devicePath))
+
+		pidFilePath := "/run/qemu-nbd.pid"
+		socketPath := "/run/qemu-nbd.sock"
+
+		if err := execCommand(ctx, "/usr/bin/qemu-nbd", "-k", socketPath, "--pid-file", pidFilePath, "-f", "qcow2", "-c", devicePath, opts.ImagePath); err != nil {
+			return fmt.Errorf("could not run qemu-nbd: %w", err)
+		}
+
+		defer func() {
+			if err := execCommand(ctx, "/usr/bin/qemu-nbd", "-k", socketPath, "-d", devicePath); err != nil {
+				logger.Warn("Could not stop qemu-nbd", zap.Error(err))
+			}
+
+			if err := os.Remove(pidFilePath); err != nil {
+				logger.Warn("Could not remove qemu-nbd pid file", zap.Error(err))
+			}
+
+			if err := os.Remove(socketPath); err != nil {
+				logger.Warn("Could not remove qemu-nbd socket", zap.Error(err))
+			}
+		}()
+
+		err = wait.PollUntilContextTimeout(ctx, time.Second, 5*time.Minute, true, func(ctx context.Context) (bool, error) {
+			size, err := blockDeviceSize(devicePath)
+			if err != nil {
+				return false, fmt.Errorf("could not get block device size: %w", err)
+			}
+
+			return size > 0, nil
+		})
+		if err != nil {
+			return fmt.Errorf("failed to wait for block device to appear: %w", err)
+		}
+
+		logger.Info("Checking if device already contains an lvm volume")
+
+		err = execCommand(ctx, "/sbin/pvck", "-v", devicePath)
+		if err != nil {
+			logger.Info("No lvm volume found, creating logical volume",
+				zap.String("volumeGroup", opts.LVM.VolumeGroup),
+				zap.String("logicalVolume", opts.LVM.LogicalVolume))
+
+			if err := createLogicalVolume(ctx, logger, devicePath, opts.LVM); err != nil {
+				return fmt.Errorf("could not create logical volume: %w", err)
+			}
+
+			logger.Info("Activating logical volume")
+
+			if err := activateLogicalVolume(ctx, logger, opts.LVM); err != nil {
+				return fmt.Errorf("could not activate logical volume: %w", err)
+			}
+
+			logger.Info("Logical volume setup complete")
+		} else {
+			logger.Info("Device contains valid lvm volume, activating logical volume",
+				zap.String("volumeGroup", opts.LVM.VolumeGroup),
+				zap.String("logicalVolume", opts.LVM.LogicalVolume))
+
+			if err := activateLogicalVolume(ctx, logger, opts.LVM); err != nil {
+				return fmt.Errorf("could not activate logical volume: %w", err)
+			}
+
+			logger.Info("Logical volume activation complete")
+		}
+
+		isReady = true
+
+		pidStr, err := os.ReadFile(pidFilePath)
+		if err != nil {
+			return fmt.Errorf("could not read qemu-nbd pid file: %w", err)
+		}
+
+		pid, err := strconv.Atoi(strings.TrimSpace(string(pidStr)))
+		if err != nil {
+			return fmt.Errorf("could not parse qemu-nbd pid: %w", err)
+		}
+
+		logger.Info("Waiting for qemu-nbd to exit")
+
+		_ = wait.PollUntilContextTimeout(ctx, time.Second, time.Duration(math.MaxInt64), true, func(ctx context.Context) (bool, error) {
+			if _, err := os.FindProcess(pid); err != nil {
+				return true, nil
+			}
+
+			return false, nil
+		})
+
+		// context has already been cancelled.
+		if err := deactivateLogicalVolume(context.Background(), logger, opts.LVM); err != nil {
+			logger.Warn("Failed to deactivate logical volume", zap.Error(err))
+		}
+
+		return nil
 	})
 
 	if err := g.Wait(); err != nil {
@@ -94,237 +182,6 @@ func MountVirtualDisk(ctx context.Context, logger *zap.Logger, opts *MountOption
 	}
 
 	return nil
-}
-
-func connectToServer(ctx context.Context, logger *zap.Logger, opts *MountOptions) error {
-	devicePath, err := findNextFreeNBDDevice()
-	if err != nil {
-		return fmt.Errorf("could not find free nbd device: %w", err)
-	}
-
-	logger.Info("Using NBD device", zap.String("device", devicePath))
-
-	f, err := os.Open(devicePath)
-	if err != nil {
-		return fmt.Errorf("could not open device file: %w", err)
-	}
-	defer f.Close()
-
-	conn, err := net.Dial("unix", opts.SocketPath)
-	if err != nil {
-		return fmt.Errorf("could not connect to socket: %w", err)
-	}
-	defer conn.Close()
-
-	go func() {
-		<-ctx.Done()
-
-		logger.Info("Deactivating logical volume")
-
-		// context has already been cancelled.
-		if err := deactivateLogicalVolume(context.Background(), logger, opts.LVM); err != nil {
-			logger.Error("Failed to deactivate logical volume", zap.Error(err))
-		}
-
-		logger.Info("Disconnecting from nbd server")
-
-		if err := client.Disconnect(f); err != nil {
-			logger.Error("Failed to disconnect from nbd server", zap.Error(err))
-		}
-	}()
-
-	logger.Info("Connecting to nbd server", zap.String("socketPath", opts.SocketPath))
-
-	errorCh := make(chan error, 1)
-
-	clientOpts := &client.Options{
-		ExportName: "virt-disk",
-		BlockSize:  uint32(client.MaximumBlockSize),
-		OnConnected: func() {
-			logger.Info("Connected to nbd server")
-
-			if opts.LVM != nil {
-				logger.Info("Checking if device already contains an lvm volume")
-
-				err := execCommand(ctx, "/sbin/pvck", "-v", devicePath)
-				if err != nil {
-					logger.Info("No lvm volume found, creating logical volume",
-						zap.String("volumeGroup", opts.LVM.VolumeGroup),
-						zap.String("logicalVolume", opts.LVM.LogicalVolume))
-
-					if err := createLogicalVolume(ctx, logger, devicePath, opts.LVM); err != nil {
-						errorCh <- fmt.Errorf("could not create logical volume: %w", err)
-
-						return
-					}
-
-					logger.Info("Activating logical volume")
-
-					if err := activateLogicalVolume(ctx, logger, opts.LVM); err != nil {
-						errorCh <- fmt.Errorf("could not activate logical volume: %w", err)
-
-						return
-					}
-
-					logger.Info("Logical volume setup complete")
-				} else {
-					logger.Info("Device contains valid lvm volume, activating logical volume",
-						zap.String("volumeGroup", opts.LVM.VolumeGroup),
-						zap.String("logicalVolume", opts.LVM.LogicalVolume))
-
-					if err := activateLogicalVolume(ctx, logger, opts.LVM); err != nil {
-						errorCh <- fmt.Errorf("could not activate logical volume: %w", err)
-
-						return
-					}
-
-					logger.Info("Logical volume activation complete")
-				}
-
-				isReady = true
-			}
-		},
-	}
-
-	go func() {
-		defer close(errorCh)
-
-		err := retry.Do(func() error {
-			if err := client.Connect(conn, f, clientOpts); err != nil {
-				logger.Warn("Could not connect to nbd server", zap.Error(err))
-
-				return err
-			}
-
-			return nil
-		})
-		if err != nil {
-			errorCh <- fmt.Errorf("could not connect to nbd server: %w", err)
-		}
-	}()
-
-	err, ok := <-errorCh
-	if ok {
-		return err
-	}
-
-	return nil
-}
-
-func listenForConnections(ctx context.Context, logger *zap.Logger, opts *MountOptions,
-	createImage bool, readyForConnCh chan struct{}) error {
-	lis, err := net.Listen("unix", opts.SocketPath)
-	if err != nil {
-		return fmt.Errorf("could not listen on socket: %w", err)
-	}
-	defer lis.Close()
-
-	logger.Info("Listening for connections", zap.String("socketPath", opts.SocketPath))
-
-	var b *qcow2.Image
-	if createImage {
-		logger.Info("Creating image", zap.String("imagePath", opts.ImagePath),
-			zap.String("size", units.HumanSize(float64(opts.Size))))
-
-		b, err = qcow2.Create(opts.ImagePath, opts.Size)
-		if err != nil {
-			logger.Error("Could not create image", zap.Error(err))
-
-			return fmt.Errorf("could not create image: %w", err)
-		}
-	} else {
-		logger.Info("Opening image", zap.String("imagePath", opts.ImagePath))
-
-		b, err = qcow2.Open(opts.ImagePath, false)
-		if err != nil {
-			logger.Error("Could not open image", zap.Error(err))
-
-			return fmt.Errorf("could not open image: %w", err)
-		}
-	}
-
-	var wg sync.WaitGroup
-
-	ch := make(chan net.Conn)
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				logger.Info("Waiting for connections to finish")
-
-				wg.Wait()
-
-				logger.Info("Shutting down server")
-
-				if err := lis.Close(); err != nil {
-					logger.Error("Could not close listener", zap.Error(err))
-				}
-
-				if err := b.Close(); err != nil {
-					logger.Error("Could not close image", zap.Error(err))
-				}
-
-				return
-			case conn := <-ch:
-				wg.Add(1)
-
-				go func() {
-					defer wg.Done()
-
-					handleConnection(conn, b, logger)
-				}()
-			}
-		}
-	}()
-
-	close(readyForConnCh)
-
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		default:
-			conn, err := lis.Accept()
-			if err != nil && errors.Is(err, net.ErrClosed) {
-				close(ch)
-				return nil
-			} else if err != nil {
-				logger.Error("Could not accept connection, continuing", zap.Error(err))
-				continue
-			}
-
-			ch <- conn
-		}
-	}
-}
-
-func handleConnection(conn net.Conn, b *qcow2.Image, logger *zap.Logger) {
-	defer func() {
-		_ = conn.Close()
-
-		if err := recover(); err != nil {
-			logger.Error("Client disconnected with error", zap.Any("error", err))
-		}
-	}()
-
-	logger.Info("Handling connection")
-
-	if err := server.Handle(
-		conn,
-		[]*server.Export{
-			{
-				Name:        "virt-disk",
-				Description: "Add virtual disk devices to any Kubernetes node.",
-				Backend:     b,
-			},
-		},
-		&server.Options{
-			MinimumBlockSize:   uint32(client.MinimumBlockSize),
-			PreferredBlockSize: uint32(client.MaximumBlockSize),
-			MaximumBlockSize:   uint32(client.MaximumBlockSize),
-		}); err != nil {
-		logger.Error("Could not handle connection", zap.Error(err))
-	}
 }
 
 func startReadyzServer(ctx context.Context, logger *zap.Logger) error {
@@ -441,6 +298,20 @@ func deactivateLogicalVolume(ctx context.Context, logger *zap.Logger, lvm *LVMOp
 	}
 
 	return nil
+}
+
+func blockDeviceSize(devicePath string) (int64, error) {
+	sizeStr, err := os.ReadFile(filepath.Join("/sys/block", filepath.Base(devicePath), "size"))
+	if err != nil {
+		return 0, fmt.Errorf("could not read block device size: %w", err)
+	}
+
+	size, err := strconv.ParseInt(strings.TrimSpace(string(sizeStr)), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("could not parse block device size: %w", err)
+	}
+
+	return size, nil
 }
 
 func execCommand(ctx context.Context, name string, arg ...string) error {

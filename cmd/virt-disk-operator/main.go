@@ -36,7 +36,6 @@ import (
 
 	"github.com/gpu-ninja/operator-utils/zaplogr"
 
-	"github.com/adrg/xdg"
 	"github.com/docker/go-units"
 	virtdiskv1alpha1 "github.com/gpu-ninja/virt-disk-operator/api/v1alpha1"
 	"github.com/gpu-ninja/virt-disk-operator/internal/controller"
@@ -56,11 +55,6 @@ func init() {
 }
 
 func main() {
-	defaultSocketPath, err := xdg.RuntimeFile("virt-disk.sock")
-	if err != nil {
-		log.Fatal(err)
-	}
-
 	app := &cli.App{
 		Name:  "virt-disk-operator",
 		Usage: "a Kubernetes operator for managing virtual disk devices",
@@ -102,11 +96,6 @@ func main() {
 						Name:     "size",
 						Usage:    "disk size (e.g., 1G, 10G, 1T)",
 						Required: true,
-					},
-					&cli.StringFlag{
-						Name:  "socket",
-						Usage: "path of the nbd socket",
-						Value: defaultSocketPath,
 					},
 					&cli.StringFlag{
 						Name:  "vg",
@@ -201,9 +190,8 @@ func mountVirtualDisk(cCtx *cli.Context) error {
 	}
 
 	opts := &disk.MountOptions{
-		SocketPath: cCtx.String("socket"),
-		ImagePath:  cCtx.String("image"),
-		Size:       sizeBytes,
+		ImagePath: cCtx.String("image"),
+		Size:      sizeBytes,
 	}
 
 	if cCtx.IsSet("vg") || cCtx.IsSet("lv") {

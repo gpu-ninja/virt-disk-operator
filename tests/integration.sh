@@ -36,9 +36,14 @@ if [ -z "${SKIP_BUILD:-}" ]; then
   (cd "${ROOT_DIR}" && earthly +docker --VERSION=latest-dev)
 fi
 
+echo 'Increasing inotify limits'
+
+sysctl -w fs.inotify.max_user_instances=8192
+sysctl -w fs.inotify.max_user_watches=524288
+
 echo 'Creating k3d cluster'
 
-k3d cluster create "${CLUSTER_NAME}" -v /host/dev:/host/dev -v /lib/modules:/lib/modules --wait
+k3d cluster create "${CLUSTER_NAME}" --image=ghcr.io/gpu-ninja/k3s-debian:latest -v /host/dev:/host/dev -v /lib/modules:/lib/modules --wait
 
 echo 'Waiting for k3s setup to complete'
 
