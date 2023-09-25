@@ -29,7 +29,7 @@ kapp deploy -y -a prometheus-crds -f "https://github.com/prometheus-operator/pro
 #### Operator
 
 ```shell
-kapp deploy -a virt-disk-operator -f https://github.com/gpu-ninja/virt-disk-operator/releases/latest/download/virt-disk-operator.yaml
+kapp deploy -y -a virt-disk-operator -f https://github.com/gpu-ninja/virt-disk-operator/releases/latest/download/virt-disk-operator.yaml
 ```
 
 ### Custom Resources
