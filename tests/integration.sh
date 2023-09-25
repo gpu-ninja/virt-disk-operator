@@ -18,7 +18,6 @@ find_root_dir() {
 export ROOT_DIR="$(find_root_dir)"
 
 PROMETHEUS_VERSION="v0.68.0"
-CERT_MANAGER_VERSION="v1.12.0"
 
 CLUSTER_NAME="virt-disk-operator-$(date +%s | rhash --simple - | cut -f 1 -d ' ')"
 
