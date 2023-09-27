@@ -39,22 +39,17 @@ const (
 	VirtualDiskConditionTypeFailed  VirtualDiskConditionType = "Failed"
 )
 
-type VirtualDiskLVMSpec struct {
-	// VolumeGroup is the name of the LVM volume group to create.
-	VolumeGroup string `json:"volumeGroup"`
-	// LogicalVolume is the name of the LVM logical volume to create.
-	// It will be allocated to use all available space in the volume group.
-	LogicalVolume string `json:"logicalVolume"`
-}
-
 type VirtualDiskSpec struct {
-	// Size is the size of the virtual disk device.
-	Size resource.Quantity `json:"size"`
-	// LVM is the optionally allows creating a logical volume from the virtual disk device.
-	LVM *VirtualDiskLVMSpec `json:"lvm,omitempty"`
 	// HostPath is the optional path where the virtual disk device will be stored.
 	// +kubebuilder:default:="/var/lib/virt-disk"
 	HostPath string `json:"hostPath,omitempty"`
+	// Size is the size of the virtual disk device.
+	Size resource.Quantity `json:"size"`
+	// VolumeGroup is the name of the optional LVM volume group to create.
+	VolumeGroup string `json:"volumeGroup,omitempty"`
+	// LogicalVolume is the name of the optional LVM logical volume to create.
+	// It will be allocated to use all available space in the volume group.
+	LogicalVolume string `json:"logicalVolume,omitempty"`
 	// NodeSelector allows specifying which nodes a virtual disk device should be created on.
 	// If not specified, the virtual disk device will be created on all nodes.
 	NodeSelector map[string]string `json:"nodeSelector,omitempty"`

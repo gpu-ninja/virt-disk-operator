@@ -4,8 +4,7 @@ metadata:
   name: demo
 spec:
   size: 100Gi
-  lvm:
-    volumeGroup: demo-vg
-    logicalVolume: demo-lv
+  volumeGroup: demo-vg
+  logicalVolume: demo-lv
   # nodeSelector:
   #   my-label: "true"

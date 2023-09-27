@@ -36,23 +36,16 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 )
 
-// LVMOptions are the options for setting up an LVM logical volume.
-type LVMOptions struct {
-	// VolumeGroup is the name of the LVM volume group to create.
-	VolumeGroup string
-	// LogicalVolume is the name of the LVM logical volume to create.
-	// It will be allocated to use all available space in the volume group.
-	LogicalVolume string
-}
-
 // MountOptions are the options for mounting a virtual disk device.
 type MountOptions struct {
 	// ImagePath is the path to the qcow2 backing image.
 	ImagePath string
 	// Size is the size of the qcow2 backing image in bytes.
 	Size int64
-	// LVM are the options for setting up an LVM logical volume.
-	LVM *LVMOptions
+	// VolumeGroup is the name of the optional LVM volume group to create.
+	VolumeGroup string
+	// LogicalVolume is the name of the optional LVM logical volume to create.
+	LogicalVolume string
 }
 
 var isReady bool
@@ -114,35 +107,28 @@ func MountVirtualDisk(ctx context.Context, logger *zap.Logger, opts *MountOption
 			return fmt.Errorf("failed to wait for block device to appear: %w", err)
 		}
 
-		logger.Info("Checking if device already contains an lvm volume")
+		if opts.VolumeGroup != "" {
+			logger.Info("Checking if device already contains an lvm volume")
 
-		err = execCommand(ctx, "/sbin/pvck", "-v", devicePath)
-		if err != nil {
-			logger.Info("No lvm volume found, creating logical volume",
-				zap.String("volumeGroup", opts.LVM.VolumeGroup),
-				zap.String("logicalVolume", opts.LVM.LogicalVolume))
+			err = execCommand(ctx, "/sbin/pvck", "-v", devicePath)
+			if err != nil {
+				logger.Info("No lvm volume found, creating",
+					zap.String("volumeGroup", opts.VolumeGroup),
+					zap.String("logicalVolume", opts.LogicalVolume))
 
-			if err := createLogicalVolume(ctx, logger, devicePath, opts.LVM); err != nil {
-				return fmt.Errorf("could not create logical volume: %w", err)
+				if err := createLVMVolume(ctx, logger, devicePath, opts); err != nil {
+					return fmt.Errorf("could not create lvm volume: %w", err)
+				}
 			}
 
-			logger.Info("Activating logical volume")
+			logger.Info("Activating volume group",
+				zap.String("volumeGroup", opts.VolumeGroup))
 
-			if err := activateLogicalVolume(ctx, logger, opts.LVM); err != nil {
-				return fmt.Errorf("could not activate logical volume: %w", err)
+			if err := activateVolumeGroup(ctx, logger, opts); err != nil {
+				return fmt.Errorf("could not activate volume group: %w", err)
 			}
 
-			logger.Info("Logical volume setup complete")
-		} else {
-			logger.Info("Device contains valid lvm volume, activating logical volume",
-				zap.String("volumeGroup", opts.LVM.VolumeGroup),
-				zap.String("logicalVolume", opts.LVM.LogicalVolume))
-
-			if err := activateLogicalVolume(ctx, logger, opts.LVM); err != nil {
-				return fmt.Errorf("could not activate logical volume: %w", err)
-			}
-
-			logger.Info("Logical volume activation complete")
+			logger.Info("LVM setup complete")
 		}
 
 		isReady = true
@@ -168,8 +154,10 @@ func MountVirtualDisk(ctx context.Context, logger *zap.Logger, opts *MountOption
 		})
 
 		// context has already been cancelled.
-		if err := deactivateLogicalVolume(context.Background(), logger, opts.LVM); err != nil {
-			logger.Warn("Failed to deactivate logical volume", zap.Error(err))
+		if opts.VolumeGroup != "" {
+			if err := deactivateVolumeGroup(context.Background(), logger, opts); err != nil {
+				logger.Warn("Failed to deactivate logical volume", zap.Error(err))
+			}
 		}
 
 		return nil
@@ -240,7 +228,7 @@ func findNextFreeNBDDevice() (string, error) {
 	return "", fmt.Errorf("no free nbd devices found")
 }
 
-func createLogicalVolume(ctx context.Context, logger *zap.Logger, devicePath string, lvm *LVMOptions) error {
+func createLVMVolume(ctx context.Context, logger *zap.Logger, devicePath string, opts *MountOptions) error {
 	logger.Info("Creating physical volume")
 
 	err := execCommand(ctx, "/sbin/pvcreate", "-v", devicePath)
@@ -250,30 +238,32 @@ func createLogicalVolume(ctx context.Context, logger *zap.Logger, devicePath str
 
 	logger.Info("Creating volume group")
 
-	err = execCommand(ctx, "/sbin/vgcreate", "-v", lvm.VolumeGroup, devicePath)
+	err = execCommand(ctx, "/sbin/vgcreate", "-v", opts.VolumeGroup, devicePath)
 	if err != nil {
 		return fmt.Errorf("could not run vgcreate: %w", err)
 	}
 
-	logger.Info("Creating logical volume")
+	if opts.LogicalVolume != "" {
+		logger.Info("Creating logical volume")
 
-	err = execCommand(ctx, "/sbin/lvcreate", "-v", "-an", "-n", lvm.LogicalVolume, "-l", "100%FREE", lvm.VolumeGroup)
-	if err != nil {
-		return fmt.Errorf("could not run lvcreate: %w", err)
+		err := execCommand(ctx, "/sbin/lvcreate", "-v", "-an", "-n", opts.LogicalVolume, "-l", "100%FREE", opts.VolumeGroup)
+		if err != nil {
+			return fmt.Errorf("could not run lvcreate: %w", err)
+		}
 	}
 
 	return nil
 }
 
-func activateLogicalVolume(ctx context.Context, logger *zap.Logger, lvm *LVMOptions) error {
+func activateVolumeGroup(ctx context.Context, logger *zap.Logger, opts *MountOptions) error {
 	logger.Info("Activating logical volume")
 
 	err := retry.Do(func() error {
-		err := execCommand(ctx, "/sbin/lvchange", "-v", "-ay", lvm.VolumeGroup)
+		err := execCommand(ctx, "/sbin/lvchange", "-v", "-ay", opts.VolumeGroup)
 		if err != nil {
 			logger.Warn("Could not activate logical volume", zap.Error(err))
 
-			if err := execCommand(ctx, "/usr/sbin/dmsetup", "remove", lvmName(lvm)); err != nil {
+			if err := execCommand(ctx, "/usr/sbin/dmsetup", "remove", lvmName(opts)); err != nil {
 				logger.Warn("Could not reset devmapper device", zap.Error(err))
 			}
 
@@ -289,10 +279,10 @@ func activateLogicalVolume(ctx context.Context, logger *zap.Logger, lvm *LVMOpti
 	return nil
 }
 
-func deactivateLogicalVolume(ctx context.Context, logger *zap.Logger, lvm *LVMOptions) error {
+func deactivateVolumeGroup(ctx context.Context, logger *zap.Logger, opts *MountOptions) error {
 	logger.Info("Deactivating logical volume")
 
-	err := execCommand(ctx, "/sbin/lvchange", "-v", "-an", lvm.VolumeGroup)
+	err := execCommand(ctx, "/sbin/lvchange", "-v", "-an", opts.VolumeGroup)
 	if err != nil {
 		return fmt.Errorf("could not run lvchange: %w", err)
 	}
@@ -339,10 +329,10 @@ func execCommand(ctx context.Context, name string, arg ...string) error {
 	return cmd.Wait()
 }
 
-func lvmName(lvm *LVMOptions) string {
+func lvmName(opts *MountOptions) string {
 	lvmEscape := func(input string) string {
 		return strings.ReplaceAll(input, "-", "--")
 	}
 
-	return fmt.Sprintf("%s-%s", lvmEscape(lvm.VolumeGroup), lvmEscape(lvm.LogicalVolume))
+	return fmt.Sprintf("%s-%s", lvmEscape(opts.VolumeGroup), lvmEscape(opts.LogicalVolume))
 }

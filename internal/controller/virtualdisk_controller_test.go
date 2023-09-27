@@ -65,11 +65,9 @@ func TestVirtualDiskReconciler(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: virtdiskv1alpha1.VirtualDiskSpec{
-			Size: resource.MustParse("100Gi"),
-			LVM: &virtdiskv1alpha1.VirtualDiskLVMSpec{
-				VolumeGroup:   "demo-vg",
-				LogicalVolume: "demo-lv",
-			},
+			Size:          resource.MustParse("100Gi"),
+			VolumeGroup:   "demo-vg",
+			LogicalVolume: "demo-lv",
 		},
 	}
 

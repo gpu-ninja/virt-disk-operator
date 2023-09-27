@@ -40,6 +40,7 @@ import (
 	virtdiskv1alpha1 "github.com/gpu-ninja/virt-disk-operator/api/v1alpha1"
 	"github.com/gpu-ninja/virt-disk-operator/internal/controller"
 	"github.com/gpu-ninja/virt-disk-operator/internal/disk"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -57,27 +58,27 @@ func init() {
 func main() {
 	app := &cli.App{
 		Name:  "virt-disk-operator",
-		Usage: "a Kubernetes operator for managing virtual disk devices",
+		Usage: "A Kubernetes operator for creating virtual disk devices.",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:  "zap-log-level",
 				Value: "info",
-				Usage: "Zap Level to configure the verbosity of logging",
+				Usage: "Zap Level to configure the verbosity of logging.",
 			},
 			&cli.StringFlag{
 				Name:  "metrics-bind-address",
 				Value: ":8080",
-				Usage: "The address the metric endpoint binds to",
+				Usage: "The address the metric endpoint binds to.",
 			},
 			&cli.StringFlag{
 				Name:  "health-probe-bind-address",
 				Value: ":8081",
-				Usage: "The address the probe endpoint binds to",
+				Usage: "The address the probe endpoint binds to.",
 			},
 			&cli.BoolFlag{
 				Name:  "leader-elect",
 				Value: false,
-				Usage: "Enable leader election for controller manager",
+				Usage: "Enable leader election for controller manager.",
 			},
 		},
 		Before: createLogger,
@@ -85,25 +86,25 @@ func main() {
 		Commands: []*cli.Command{
 			{
 				Name:  "mount",
-				Usage: "mount a virtual disk device",
+				Usage: "Mount a virtual disk device.",
 				Flags: []cli.Flag{
 					&cli.StringFlag{
 						Name:     "image",
-						Usage:    "path to the backing image file",
+						Usage:    "Path to the qcow2 backing image.",
 						Required: true,
 					},
 					&cli.StringFlag{
 						Name:     "size",
-						Usage:    "disk size (e.g., 1G, 10G, 1T)",
+						Usage:    "Disk size (e.g., 1G, 10G, 1T).",
 						Required: true,
 					},
 					&cli.StringFlag{
 						Name:  "vg",
-						Usage: "name of a volume group to create",
+						Usage: "Name of the optional volume group to create.",
 					},
 					&cli.StringFlag{
 						Name:  "lv",
-						Usage: "name of a logical volume to create",
+						Usage: "Name of the optional logical volume to create.",
 					},
 				},
 				Before: createLogger,
@@ -138,8 +139,7 @@ func createLogger(cCtx *cli.Context) error {
 func startManager(cCtx *cli.Context) error {
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
-		MetricsBindAddress:     cCtx.String("metrics-bind-address"),
-		Port:                   9443,
+		Metrics:                metricsserver.Options{BindAddress: cCtx.String("metrics-bind-address")},
 		HealthProbeBindAddress: cCtx.String("health-probe-bind-address"),
 		LeaderElection:         cCtx.Bool("leader-elect"),
 		LeaderElectionID:       "49e56cbc.gpu-ninja.com",
@@ -190,15 +190,10 @@ func mountVirtualDisk(cCtx *cli.Context) error {
 	}
 
 	opts := &disk.MountOptions{
-		ImagePath: cCtx.String("image"),
-		Size:      sizeBytes,
-	}
-
-	if cCtx.IsSet("vg") || cCtx.IsSet("lv") {
-		opts.LVM = &disk.LVMOptions{
-			VolumeGroup:   cCtx.String("vg"),
-			LogicalVolume: cCtx.String("lv"),
-		}
+		ImagePath:     cCtx.String("image"),
+		Size:          sizeBytes,
+		VolumeGroup:   cCtx.String("vg"),
+		LogicalVolume: cCtx.String("lv"),
 	}
 
 	return disk.MountVirtualDisk(ctrl.SetupSignalHandler(), logger, opts)

@@ -40,23 +40,11 @@ spec:
                 description: HostPath is the optional path where the virtual disk
                   device will be stored.
                 type: string
-              lvm:
-                description: LVM is the optionally allows creating a logical volume
-                  from the virtual disk device.
-                properties:
-                  logicalVolume:
-                    description: LogicalVolume is the name of the LVM logical volume
-                      to create. It will be allocated to use all available space in
-                      the volume group.
-                    type: string
-                  volumeGroup:
-                    description: VolumeGroup is the name of the LVM volume group to
-                      create.
-                    type: string
-                required:
-                - logicalVolume
-                - volumeGroup
-                type: object
+              logicalVolume:
+                description: LogicalVolume is the name of the optional LVM logical
+                  volume to create. It will be allocated to use all available space
+                  in the volume group.
+                type: string
               nodeSelector:
                 additionalProperties:
                   type: string
@@ -120,6 +108,10 @@ spec:
                 description: Size is the size of the virtual disk device.
                 pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                 x-kubernetes-int-or-string: true
+              volumeGroup:
+                description: VolumeGroup is the name of the optional LVM volume group
+                  to create.
+                type: string
             required:
             - size
             type: object

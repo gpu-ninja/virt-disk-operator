@@ -334,7 +334,7 @@ done
 		"--size=" + units.BytesSize(float64(vdisk.Spec.Size.Value())),
 	}
 
-	if vdisk.Spec.LVM != nil {
+	if vdisk.Spec.VolumeGroup != "" {
 		initContainers = append(initContainers, corev1.Container{
 			Name:    "clean-up",
 			Image:   image,
@@ -353,10 +353,7 @@ fi
 			},
 			Env: []corev1.EnvVar{{
 				Name:  "NAME",
-				Value: lvmName(vdisk.Spec.LVM),
-			}, {
-				Name:  "VG_NAME",
-				Value: vdisk.Spec.LVM.VolumeGroup,
+				Value: lvmName(vdisk),
 			}},
 			SecurityContext: &corev1.SecurityContext{
 				Privileged: ptr.To(true),
@@ -376,7 +373,10 @@ fi
 			}},
 		})
 
-		args = append(args, "--lv="+vdisk.Spec.LVM.LogicalVolume, "--vg="+vdisk.Spec.LVM.VolumeGroup)
+		args = append(args, "--vg="+vdisk.Spec.VolumeGroup)
+		if vdisk.Spec.LogicalVolume != "" {
+			args = append(args, "--lv="+vdisk.Spec.LogicalVolume)
+		}
 	}
 
 	virtDiskContainer := corev1.Container{
@@ -528,10 +528,10 @@ func (r *VirtualDiskReconciler) isDaemonSetReady(ctx context.Context, vdisk *vir
 		ds.Status.NumberReady == ds.Status.DesiredNumberScheduled, nil
 }
 
-func lvmName(lvm *virtdiskv1alpha1.VirtualDiskLVMSpec) string {
+func lvmName(vdisk *virtdiskv1alpha1.VirtualDisk) string {
 	lvmEscape := func(input string) string {
 		return strings.ReplaceAll(input, "-", "--")
 	}
 
-	return fmt.Sprintf("%s-%s", lvmEscape(lvm.VolumeGroup), lvmEscape(lvm.LogicalVolume))
+	return fmt.Sprintf("%s-%s", lvmEscape(vdisk.Spec.VolumeGroup), lvmEscape(vdisk.Spec.LogicalVolume))
 }
