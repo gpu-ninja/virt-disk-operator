@@ -222,7 +222,7 @@ func createVolume(ctx context.Context, logger *zap.Logger, devicePath string, op
 			return fmt.Errorf("could not create luks volume: %w", err)
 		}
 
-		cryptoDevicePath := "/dev/mapper/crypto--" + lvmEscape(opts.VolumeGroup)
+		cryptoDevicePath := "/dev/mapper/crypto_" + lvmEscape(opts.VolumeGroup)
 
 		if _, err := os.Stat(cryptoDevicePath); err == nil {
 			logger.Info("Cleaning up existing crypto devmapper device",
@@ -242,6 +242,14 @@ func createVolume(ctx context.Context, logger *zap.Logger, devicePath string, op
 		err = execCommand(ctx, in, "/sbin/cryptsetup", "open", "--type", "luks2", devicePath, filepath.Base(cryptoDevicePath))
 		if err != nil {
 			return fmt.Errorf("could not open luks volume: %w", err)
+		}
+
+		logger.Info("Zeroing first 16MB of crypto device so it will be detected as empty",
+			zap.String("device", cryptoDevicePath))
+
+		err = execCommand(ctx, nil, "/usr/bin/dd", "if=/dev/zero", "of="+cryptoDevicePath, "bs=1M", "count=16")
+		if err != nil {
+			return fmt.Errorf("could not wipe crypto device: %w", err)
 		}
 
 		devicePath = cryptoDevicePath
@@ -298,7 +306,7 @@ func activateVolume(ctx context.Context, logger *zap.Logger, devicePath string, 
 	}
 
 	if opts.EncryptionPassphrase != "" {
-		cryptoDevicePath := "/dev/mapper/crypto--" + lvmEscape(opts.VolumeGroup)
+		cryptoDevicePath := "/dev/mapper/crypto_" + lvmEscape(opts.VolumeGroup)
 
 		if _, err := os.Stat(cryptoDevicePath); err == nil {
 			logger.Info("Cleaning up existing crypto devmapper device",
@@ -340,7 +348,7 @@ func deactivateVolume(ctx context.Context, logger *zap.Logger, opts *AttachOptio
 	}
 
 	if opts.EncryptionPassphrase != "" {
-		cryptoDevicePath := "/dev/mapper/crypto--" + lvmEscape(opts.VolumeGroup)
+		cryptoDevicePath := "/dev/mapper/crypto_" + lvmEscape(opts.VolumeGroup)
 
 		logger.Info("Closing luks volume",
 			zap.String("device", cryptoDevicePath))

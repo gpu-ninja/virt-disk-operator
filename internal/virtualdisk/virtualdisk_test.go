@@ -61,7 +61,7 @@ func TestAttach(t *testing.T) {
 
 		opts := virtualdisk.AttachOptions{
 			Image:         imagePath,
-			Size:          32 * units.MB,
+			Size:          64 * units.MB,
 			VolumeGroup:   id + "_vg",
 			LogicalVolume: id + "_lv",
 			PIDFilePath:   filepath.Join("/run/qemu-nbd", id+".pid"),
@@ -119,7 +119,7 @@ func TestAttach(t *testing.T) {
 
 		opts := virtualdisk.AttachOptions{
 			Image:                imagePath,
-			Size:                 32 * units.MB,
+			Size:                 64 * units.MB,
 			VolumeGroup:          id + "_vg",
 			LogicalVolume:        id + "_lv",
 			EncryptionPassphrase: "correct horse battery staple",
@@ -178,7 +178,7 @@ func TestAttach(t *testing.T) {
 
 		opts := virtualdisk.AttachOptions{
 			Image:         imagePath,
-			Size:          32 * units.MB,
+			Size:          64 * units.MB,
 			VolumeGroup:   id + "_vg",
 			LogicalVolume: id + "_lv",
 			PIDFilePath:   filepath.Join("/run/qemu-nbd", id+".pid"),
@@ -269,7 +269,7 @@ func TestAttach(t *testing.T) {
 
 		opts := virtualdisk.AttachOptions{
 			Image:         imagePath,
-			Size:          32 * units.MB,
+			Size:          64 * units.MB,
 			VolumeGroup:   id + "_vg",
 			LogicalVolume: id + "_lv",
 			PIDFilePath:   filepath.Join("/run/qemu-nbd", id+".pid"),
