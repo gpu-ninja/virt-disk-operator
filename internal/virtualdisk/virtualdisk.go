@@ -135,6 +135,10 @@ func Attach(ctx context.Context, logger *zap.Logger, opts *AttachOptions, readyC
 			zap.String("logicalVolume", opts.LogicalVolume))
 
 		if err := createVolume(ctx, logger, devicePath, opts); err != nil {
+			if err := os.RemoveAll(opts.Image); err != nil {
+				logger.Warn("Could not remove backing image", zap.Error(err))
+			}
+
 			return fmt.Errorf("could not create volume: %w", err)
 		}
 	} else {
