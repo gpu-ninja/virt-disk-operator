@@ -213,8 +213,11 @@ func createVolume(ctx context.Context, logger *zap.Logger, devicePath string, op
 		logger.Info("Creating luks volume",
 			zap.String("device", devicePath))
 
+		// By default luks2 uses 1GB of memory for the Argon2 key derivation function.
+		// We're going to reduce this a little because of memory constraints.
+		// So set the passphrase to a strong random value rather than anything to easy to brute force.
 		in := strings.NewReader(opts.EncryptionPassphrase + "\n" + opts.EncryptionPassphrase + "\n")
-		err := execCommand(ctx, in, "/sbin/cryptsetup", "luksFormat", "-q", "--type", "luks2", devicePath)
+		err := execCommand(ctx, in, "/sbin/cryptsetup", "luksFormat", "-q", "--type", "luks2", "--pbkdf-memory", "128000", devicePath)
 		if err != nil {
 			return fmt.Errorf("could not create luks volume: %w", err)
 		}
