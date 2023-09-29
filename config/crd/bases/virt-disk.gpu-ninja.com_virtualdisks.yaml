@@ -35,6 +35,21 @@ spec:
             type: object
           spec:
             properties:
+              encryptionPassphraseSecretRef:
+                description: EncryptionPassphraseSecretRef is the optional reference
+                  to a secret containing a LUKS encryption passphrase. If specified,
+                  the virtual disk device will be encrypted using LUKS.
+                properties:
+                  key:
+                    description: Key is the key of the value in the secret.
+                    type: string
+                  name:
+                    description: Name is the name of the secret.
+                    type: string
+                required:
+                - key
+                - name
+                type: object
               hostPath:
                 default: /var/lib/virt-disk
                 description: HostPath is the optional path where the virtual disk
@@ -109,11 +124,11 @@ spec:
                 pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                 x-kubernetes-int-or-string: true
               volumeGroup:
-                description: VolumeGroup is the name of the optional LVM volume group
-                  to create.
+                description: VolumeGroup is the name of the LVM volume group to create.
                 type: string
             required:
             - size
+            - volumeGroup
             type: object
           status:
             properties:

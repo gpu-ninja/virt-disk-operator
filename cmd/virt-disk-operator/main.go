@@ -18,9 +18,13 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
+	"time"
 
 	zaplogfmt "github.com/jsternberg/zap-logfmt"
 	"github.com/urfave/cli/v2"
@@ -39,7 +43,8 @@ import (
 	"github.com/docker/go-units"
 	virtdiskv1alpha1 "github.com/gpu-ninja/virt-disk-operator/api/v1alpha1"
 	"github.com/gpu-ninja/virt-disk-operator/internal/controller"
-	"github.com/gpu-ninja/virt-disk-operator/internal/disk"
+	"github.com/gpu-ninja/virt-disk-operator/internal/virtualdisk"
+	disk "github.com/gpu-ninja/virt-disk-operator/internal/virtualdisk"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	// +kubebuilder:scaffold:imports
 )
@@ -85,8 +90,8 @@ func main() {
 		Action: startManager,
 		Commands: []*cli.Command{
 			{
-				Name:  "mount",
-				Usage: "Mount a virtual disk device.",
+				Name:  "attach",
+				Usage: "Attach a virtual disk device.",
 				Flags: []cli.Flag{
 					&cli.StringFlag{
 						Name:     "image",
@@ -99,16 +104,24 @@ func main() {
 						Required: true,
 					},
 					&cli.StringFlag{
-						Name:  "vg",
-						Usage: "Name of the optional volume group to create.",
+						Name:     "vg-name",
+						Usage:    "Name of the volume group to create.",
+						Required: true,
 					},
 					&cli.StringFlag{
-						Name:  "lv",
+						Name:  "lv-name",
 						Usage: "Name of the optional logical volume to create.",
+					},
+					&cli.StringFlag{
+						Name:  "passphrase",
+						Usage: "Optional LUKS encryption passphrase.",
+						EnvVars: []string{
+							"VIRT_DISK_PASSPHRASE",
+						},
 					},
 				},
 				Before: createLogger,
-				Action: mountVirtualDisk,
+				Action: attachVirtualDisk,
 			},
 		},
 	}
@@ -183,18 +196,64 @@ func startManager(cCtx *cli.Context) error {
 	return nil
 }
 
-func mountVirtualDisk(cCtx *cli.Context) error {
+func attachVirtualDisk(cCtx *cli.Context) error {
+	ctx := ctrl.SetupSignalHandler()
+
 	sizeBytes, err := units.FromHumanSize(cCtx.String("size"))
 	if err != nil {
 		return fmt.Errorf("unable to parse size: %w", err)
 	}
 
-	opts := &disk.MountOptions{
-		ImagePath:     cCtx.String("image"),
-		Size:          sizeBytes,
-		VolumeGroup:   cCtx.String("vg"),
-		LogicalVolume: cCtx.String("lv"),
+	opts := &disk.AttachOptions{
+		Image:                cCtx.String("image"),
+		Size:                 sizeBytes,
+		VolumeGroup:          cCtx.String("vg-name"),
+		LogicalVolume:        cCtx.String("lv-name"),
+		EncryptionPassphrase: cCtx.String("passphrase"),
 	}
 
-	return disk.MountVirtualDisk(ctrl.SetupSignalHandler(), logger, opts)
+	readyCh := make(chan struct{}, 1)
+	defer close(readyCh)
+
+	go func() {
+		if _, ok := <-readyCh; ok {
+			if err := startReadyzServer(ctx, logger); err != nil {
+				logger.Error("failed to start readyz server", zap.Error(err))
+			}
+		}
+	}()
+
+	if err := virtualdisk.Attach(ctx, logger, opts, readyCh); err != nil {
+		return fmt.Errorf("unable to attach virtual disk: %w", err)
+	}
+
+	return nil
+}
+
+func startReadyzServer(ctx context.Context, logger *zap.Logger) error {
+	http.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		if _, err := w.Write([]byte("OK")); err != nil {
+			logger.Warn("Could not write response", zap.Error(err))
+		}
+	})
+
+	server := &http.Server{
+		Addr: ":8081",
+	}
+
+	go func() {
+		<-ctx.Done()
+
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		_ = server.Shutdown(shutdownCtx)
+	}()
+
+	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return fmt.Errorf("could not start readyz server: %w", err)
+	}
+
+	return nil
 }

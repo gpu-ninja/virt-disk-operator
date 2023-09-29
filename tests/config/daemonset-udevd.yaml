@@ -67,9 +67,7 @@ spec:
             - --source=/host/dev
             - --destination=/dev
             - --filter=dm*
-            - --filter=loop*
             - --filter=nbd*
-            - --filter=rbd*
           securityContext:
             privileged: true
           resources:

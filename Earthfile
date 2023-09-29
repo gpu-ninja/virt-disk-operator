@@ -9,7 +9,7 @@ docker:
   ARG TARGETARCH
   FROM debian:bookworm-slim
   RUN apt update \
-    && apt install -y udev lvm2 kmod qemu-utils
+    && apt install -y udev lvm2 cryptsetup kmod qemu-utils
   COPY LICENSE /usr/local/share/virt-disk-operator/
   COPY (+virt-disk-operator/virt-disk-operator --GOARCH=${TARGETARCH}) /manager
   ENTRYPOINT ["/manager"]

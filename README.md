@@ -5,9 +5,10 @@ A Kubernetes operator for creating virtual disk devices. This is primarily usefu
 ## Features
 
 * Based on Linux NBD (Network Block Device).
-* Thin provisioning (eg. virtual disks only take up as much space as they need).
-* LVM logical volume support.
 * Can be run locally (eg. KinD) including on Docker Desktop for Mac (using [containerized udev](tests/config/daemonset-udevd.yaml)).
+* Thin provisioning (eg. virtual disks only take up as much space as they need).
+* LVM2 logical volume support.
+* LUKS encryption support.
 
 ## Getting Started
 

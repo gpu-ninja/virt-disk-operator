@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -47,6 +46,9 @@ import (
 
 // Allow recording of events.
 // +kubebuilder:rbac:groups="",resources=events,verbs=get;list;watch;create;update;patch
+
+// Need to be able to read secrets to get encryption passphrases etc.
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 
 // Need to be able to get pods (primarily for determining the image to use).
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
@@ -119,6 +121,28 @@ func (r *VirtualDiskReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		}
 
 		return ctrl.Result{}, nil
+	}
+
+	ok, err := vdisk.ResolveReferences(ctx, r.Client, r.Scheme)
+	if !ok && err == nil {
+		logger.Info("Not all references are resolvable, requeuing")
+
+		r.Recorder.Event(&vdisk, corev1.EventTypeWarning,
+			"NotReady", "Not all references are resolvable")
+
+		if err := r.markPending(ctx, &vdisk); err != nil {
+			return ctrl.Result{}, err
+		}
+
+		return ctrl.Result{RequeueAfter: reconcileRetryInterval}, nil
+	} else if err != nil {
+		r.Recorder.Eventf(&vdisk, corev1.EventTypeWarning,
+			"Failed", "Failed to resolve references: %s", err)
+
+		r.markFailed(ctx, &vdisk,
+			fmt.Errorf("failed to resolve references: %w", err))
+
+		return ctrl.Result{}, fmt.Errorf("failed to resolve references: %w", err)
 	}
 
 	logger.Info("Creating or updating")
@@ -329,60 +353,36 @@ done
 	}}
 
 	args := []string{
-		"mount",
+		"attach",
 		"--image=" + filepath.Join(vdisk.Spec.HostPath, fmt.Sprintf("%s-%s.qcow2", vdisk.Namespace, vdisk.Name)),
 		"--size=" + units.BytesSize(float64(vdisk.Spec.Size.Value())),
+		"--vg-name=" + vdisk.Spec.VolumeGroup,
 	}
 
-	if vdisk.Spec.VolumeGroup != "" {
-		initContainers = append(initContainers, corev1.Container{
-			Name:    "clean-up",
-			Image:   image,
-			Command: []string{"/bin/sh"},
-			Args: []string{
-				"-c",
-				`
-if dmsetup ls | grep "${NAME}" >/dev/null; then
-  echo 'Removing existing devmapper device'
-  /sbin/dmsetup remove -v -f "${NAME}"
+	if vdisk.Spec.LogicalVolume != "" {
+		args = append(args, "--lv-name="+vdisk.Spec.LogicalVolume)
+	}
 
-  echo 'Waiting for udev to settle'
-  udevadm settle
-fi
-`,
+	var env []corev1.EnvVar
+	if vdisk.Spec.EncryptionPassphraseSecretRef != nil {
+		env = append(env, corev1.EnvVar{
+			Name: "VIRT_DISK_PASSPHRASE",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					Key: vdisk.Spec.EncryptionPassphraseSecretRef.Key,
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: vdisk.Spec.EncryptionPassphraseSecretRef.Name,
+					},
+				},
 			},
-			Env: []corev1.EnvVar{{
-				Name:  "NAME",
-				Value: lvmName(vdisk),
-			}},
-			SecurityContext: &corev1.SecurityContext{
-				Privileged: ptr.To(true),
-			},
-			VolumeMounts: []corev1.VolumeMount{{
-				Name:      "dev",
-				MountPath: "/dev",
-			}, {
-				Name:      "udev",
-				MountPath: "/run/udev",
-			}, {
-				Name:      "lvmrundir",
-				MountPath: "/run/lvm",
-			}, {
-				Name:      "lvmlockdir",
-				MountPath: "/run/lock/lvm",
-			}},
 		})
-
-		args = append(args, "--vg="+vdisk.Spec.VolumeGroup)
-		if vdisk.Spec.LogicalVolume != "" {
-			args = append(args, "--lv="+vdisk.Spec.LogicalVolume)
-		}
 	}
 
 	virtDiskContainer := corev1.Container{
 		Name:  "virt-disk",
 		Image: image,
 		Args:  args,
+		Env:   env,
 		SecurityContext: &corev1.SecurityContext{
 			Privileged: ptr.To(true),
 		},
@@ -437,7 +437,7 @@ fi
 					},
 				},
 				Spec: corev1.PodSpec{
-					// udev communication involves semaphores.
+					// udev communication involves semaphores so need to share ipc namespace.
 					HostIPC:                       true,
 					TerminationGracePeriodSeconds: ptr.To(int64(10)),
 					NodeSelector:                  vdisk.Spec.NodeSelector,
@@ -526,12 +526,4 @@ func (r *VirtualDiskReconciler) isDaemonSetReady(ctx context.Context, vdisk *vir
 
 	return ds.Status.DesiredNumberScheduled != 0 &&
 		ds.Status.NumberReady == ds.Status.DesiredNumberScheduled, nil
-}
-
-func lvmName(vdisk *virtdiskv1alpha1.VirtualDisk) string {
-	lvmEscape := func(input string) string {
-		return strings.ReplaceAll(input, "-", "--")
-	}
-
-	return fmt.Sprintf("%s-%s", lvmEscape(vdisk.Spec.VolumeGroup), lvmEscape(vdisk.Spec.LogicalVolume))
 }

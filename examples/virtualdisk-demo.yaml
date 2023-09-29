@@ -6,5 +6,8 @@ spec:
   size: 100Gi
   volumeGroup: demo-vg
   logicalVolume: demo-lv
+  encryptionPassphraseSecretRef:
+    name: demo-passphrase
+    key: passphrase
   # nodeSelector:
   #   my-label: "true"
