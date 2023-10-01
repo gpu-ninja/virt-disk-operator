@@ -50,9 +50,8 @@ type VirtualDiskSpec struct {
 	// LogicalVolume is the name of the optional LVM logical volume to create.
 	// It will be allocated to use all available space in the volume group.
 	LogicalVolume string `json:"logicalVolume,omitempty"`
-	// Encryption is a flag indicating whether the virtual disk device should be encrypted using LUKS.
-	Encryption bool `json:"encryption,omitempty"`
 	// EncryptionKeySecretName is the name of the secret that will be created to store the LUKS encryption key.
+	// If specified, the virtual disk device will be encrypted using LUKS.
 	EncryptionKeySecretName string `json:"encryptionKeySecretName,omitempty"`
 	// NodeSelector allows specifying which nodes a virtual disk device should be created on.
 	// If not specified, the virtual disk device will be created on all nodes.

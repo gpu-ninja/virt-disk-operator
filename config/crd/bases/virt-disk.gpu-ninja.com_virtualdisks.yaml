@@ -35,13 +35,10 @@ spec:
             type: object
           spec:
             properties:
-              encryption:
-                description: Encryption is a flag indicating whether the virtual disk
-                  device should be encrypted using LUKS.
-                type: boolean
               encryptionKeySecretName:
                 description: EncryptionKeySecretName is the name of the secret that
-                  will be created to store the LUKS encryption key.
+                  will be created to store the LUKS encryption key. If specified,
+                  the virtual disk device will be encrypted using LUKS.
                 type: string
               hostPath:
                 default: /var/lib/virt-disk

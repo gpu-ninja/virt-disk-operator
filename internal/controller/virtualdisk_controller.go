@@ -421,7 +421,7 @@ done
 		args = append(args, "--lv-name="+vdisk.Spec.LogicalVolume)
 	}
 
-	if vdisk.Spec.Encryption {
+	if vdisk.Spec.EncryptionKeySecretName != "" {
 		logger.Info("Checking for existing encryption key")
 
 		encryptionKeySecret := corev1.Secret{
