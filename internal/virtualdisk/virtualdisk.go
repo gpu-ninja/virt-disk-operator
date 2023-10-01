@@ -21,6 +21,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -198,24 +199,20 @@ func findNextFreeNBDDevice() (string, error) {
 		return "", fmt.Errorf("could not read /sys/block: %w", err)
 	}
 
-	var nbdDevices []string
+	var availableNBDDevices []string
 	for _, dev := range devices {
 		if strings.HasPrefix(dev, "nbd") {
-			nbdDevices = append(nbdDevices, dev)
+			if _, err := os.ReadFile(filepath.Join("/sys/block", dev, "pid")); errors.Is(err, os.ErrNotExist) {
+				availableNBDDevices = append(availableNBDDevices, dev)
+			}
 		}
 	}
 
-	for _, dev := range nbdDevices {
-		pidFilePath := filepath.Join("/sys/block", dev, "pid")
-		_, err := os.ReadFile(pidFilePath)
-		if errors.Is(err, os.ErrNotExist) {
-			return filepath.Join("/dev/", dev), nil
-		} else if err != nil {
-			return "", err
-		}
+	if len(availableNBDDevices) == 0 {
+		return "", fmt.Errorf("no free nbd devices found")
 	}
 
-	return "", fmt.Errorf("no free nbd devices found")
+	return filepath.Join("/dev/", availableNBDDevices[rand.Intn(len(availableNBDDevices))]), nil
 }
 
 func createVolume(ctx context.Context, logger *zap.Logger, devicePath string, opts *AttachOptions) error {
