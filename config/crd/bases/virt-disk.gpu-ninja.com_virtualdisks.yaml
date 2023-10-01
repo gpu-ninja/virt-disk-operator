@@ -35,21 +35,14 @@ spec:
             type: object
           spec:
             properties:
-              encryptionPassphraseSecretRef:
-                description: EncryptionPassphraseSecretRef is the optional reference
-                  to a secret containing a LUKS encryption passphrase. If specified,
-                  the virtual disk device will be encrypted using LUKS.
-                properties:
-                  key:
-                    description: Key is the key of the value in the secret.
-                    type: string
-                  name:
-                    description: Name is the name of the secret.
-                    type: string
-                required:
-                - key
-                - name
-                type: object
+              encryption:
+                description: Encryption is a flag indicating whether the virtual disk
+                  device should be encrypted using LUKS.
+                type: boolean
+              encryptionKeySecretName:
+                description: EncryptionKeySecretName is the name of the secret that
+                  will be created to store the LUKS encryption key.
+                type: string
               hostPath:
                 default: /var/lib/virt-disk
                 description: HostPath is the optional path where the virtual disk

@@ -21,12 +21,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"go.uber.org/zap"
@@ -43,8 +43,8 @@ type AttachOptions struct {
 	VolumeGroup string
 	// LogicalVolume is the name of the optional LVM logical volume to create.
 	LogicalVolume string
-	// EncryptionPassphrase is the optional LUKS encryption passphrase.
-	EncryptionPassphrase string
+	// EncryptionKeyFilePath is the optional encryption key file to use for LUKS.
+	EncryptionKeyFilePath string
 	// PIDFilePath is the optional path to the qemu-nbd pid file.
 	// If not specified, /run/qemu-nbd.pid is used.
 	PIDFilePath string
@@ -58,7 +58,7 @@ func Attach(ctx context.Context, logger *zap.Logger, opts *AttachOptions, readyC
 	if _, err := os.Stat(opts.Image); errors.Is(err, os.ErrNotExist) {
 		logger.Info("Backing image does not exist, creating it")
 
-		if err := execCommand(ctx, nil, "/usr/bin/qemu-img", "create", "-f", "qcow2", opts.Image, strconv.FormatInt(opts.Size, 10)); err != nil {
+		if err := execCommand(ctx, time.Minute, "/usr/bin/qemu-img", "create", "-f", "qcow2", opts.Image, strconv.FormatInt(opts.Size, 10)); err != nil {
 			return fmt.Errorf("could not create backing image: %w", err)
 		}
 	}
@@ -80,7 +80,7 @@ func Attach(ctx context.Context, logger *zap.Logger, opts *AttachOptions, readyC
 		socketPath = "/run/qemu-nbd.sock"
 	}
 
-	if err := execCommand(ctx, nil, "/usr/bin/qemu-nbd", "-k", socketPath, "--pid-file", pidFilePath, "-f", "qcow2", "-c", devicePath, opts.Image); err != nil {
+	if err := execCommand(ctx, 10*time.Second, "/usr/bin/qemu-nbd", "-k", socketPath, "--pid-file", pidFilePath, "-f", "qcow2", "-c", devicePath, opts.Image); err != nil {
 		return fmt.Errorf("could not run qemu-nbd: %w", err)
 	}
 
@@ -95,7 +95,7 @@ func Attach(ctx context.Context, logger *zap.Logger, opts *AttachOptions, readyC
 
 		logger.Info("Stopping qemu-nbd")
 
-		if err := execCommand(shutdownCtx, nil, "/usr/bin/qemu-nbd", "-k", socketPath, "-d", devicePath); err != nil {
+		if err := execCommand(shutdownCtx, 10*time.Second, "/usr/bin/qemu-nbd", "-k", socketPath, "-d", devicePath); err != nil {
 			logger.Warn("Could not stop qemu-nbd", zap.Error(err))
 		}
 
@@ -119,12 +119,12 @@ func Attach(ctx context.Context, logger *zap.Logger, opts *AttachOptions, readyC
 	logger.Info("Checking if device already contains an lvm / luks volume")
 
 	var needsCreation bool
-	if opts.EncryptionPassphrase != "" {
-		if err := execCommand(ctx, nil, "/sbin/cryptsetup", "isLuks", devicePath); err != nil {
+	if opts.EncryptionKeyFilePath != "" {
+		if err := execCommand(ctx, 10*time.Second, "/sbin/cryptsetup", "isLuks", "--debug", devicePath); err != nil {
 			needsCreation = true
 		}
 	} else {
-		if err := execCommand(ctx, nil, "/sbin/pvck", "-v", devicePath); err != nil {
+		if err := execCommand(ctx, 10*time.Second, "/sbin/pvck", "-v", devicePath); err != nil {
 			needsCreation = true
 		}
 	}
@@ -154,15 +154,34 @@ func Attach(ctx context.Context, logger *zap.Logger, opts *AttachOptions, readyC
 
 	readyCh <- struct{}{}
 
-	logger.Info("Waiting for qemu-nbd to exit")
+	pidBytes, err := os.ReadFile(pidFilePath)
+	if err != nil {
+		return fmt.Errorf("could not read qemu-nbd pid: %w", err)
+	}
+
+	qemuNBDPID, err := strconv.Atoi(strings.TrimSpace(string(pidBytes)))
+	if err != nil {
+		return fmt.Errorf("could not parse qemu-nbd pid: %w", err)
+	}
+
+	logger.Info("Waiting for qemu-nbd to exit",
+		zap.Int("pid", qemuNBDPID))
 
 	for {
-		if _, err := os.Stat(pidFilePath); err != nil {
+		p, err := os.FindProcess(qemuNBDPID)
+		if err != nil {
+			break
+		}
+
+		if err := p.Signal(os.Signal(syscall.Signal(0))); err != nil {
 			break
 		}
 
 		time.Sleep(time.Second)
 	}
+
+	// Bit of a hack, but for some reason it can take a while for qemu-nbd file locks to be released
+	time.Sleep(5 * time.Second)
 
 	return nil
 }
@@ -206,22 +225,22 @@ func createVolume(ctx context.Context, logger *zap.Logger, devicePath string, op
 			logger.Info("Cleaning up existing devmapper device",
 				zap.String("device", devMapperDevicePath))
 
-			err := execCommand(ctx, nil, "/usr/sbin/dmsetup", "remove", "-v", lvmName(opts))
+			err := execCommand(ctx, 10*time.Second, "/usr/sbin/dmsetup", "remove", "-v", lvmName(opts))
 			if err != nil {
 				return fmt.Errorf("could not reset devmapper device: %w", err)
 			}
 		}
 	}
 
-	if opts.EncryptionPassphrase != "" {
+	if opts.EncryptionKeyFilePath != "" {
 		logger.Info("Creating luks volume",
 			zap.String("device", devicePath))
 
-		// By default luks2 uses 1GB of memory for the Argon2 key derivation function.
-		// We're going to reduce this a little because of memory constraints.
-		// So set the passphrase to a strong random value rather than anything to easy to brute force.
-		in := strings.NewReader(opts.EncryptionPassphrase + "\n" + opts.EncryptionPassphrase + "\n")
-		err := execCommand(ctx, in, "/sbin/cryptsetup", "luksFormat", "-q", "--type", "luks2", "--pbkdf-memory", "128000", devicePath)
+		err := execCommand(ctx, 5*time.Minute, "/sbin/cryptsetup", "luksFormat", "--debug", "-q", "--type", "luks2",
+			// We use a very strong random keyfile, so we can lower the KDF iterations and memory usage.
+			// This helps prevent the consumption of excessive CPU and memory resources.
+			"--pbkdf", "argon2id", "--pbkdf-force-iterations", "4", "--pbkdf-memory", "64000",
+			"--key-file", opts.EncryptionKeyFilePath, devicePath)
 		if err != nil {
 			return fmt.Errorf("could not create luks volume: %w", err)
 		}
@@ -232,7 +251,7 @@ func createVolume(ctx context.Context, logger *zap.Logger, devicePath string, op
 			logger.Info("Cleaning up existing crypto devmapper device",
 				zap.String("device", cryptoDevicePath))
 
-			err := execCommand(ctx, nil, "/usr/sbin/dmsetup", "remove", "-v", filepath.Base(cryptoDevicePath))
+			err := execCommand(ctx, 10*time.Second, "/usr/sbin/dmsetup", "remove", "-v", filepath.Base(cryptoDevicePath))
 			if err != nil {
 				return fmt.Errorf("could not reset devmapper device: %w", err)
 			}
@@ -242,8 +261,9 @@ func createVolume(ctx context.Context, logger *zap.Logger, devicePath string, op
 			zap.String("device", devicePath),
 			zap.String("cryptoDevice", cryptoDevicePath))
 
-		in = strings.NewReader(opts.EncryptionPassphrase + "\n")
-		err = execCommand(ctx, in, "/sbin/cryptsetup", "open", "--type", "luks2", devicePath, filepath.Base(cryptoDevicePath))
+		err = execCommand(ctx, time.Minute, "/sbin/cryptsetup", "open", "--debug", "--type", "luks2",
+			"--key-file", opts.EncryptionKeyFilePath,
+			devicePath, filepath.Base(cryptoDevicePath))
 		if err != nil {
 			return fmt.Errorf("could not open luks volume: %w", err)
 		}
@@ -251,7 +271,7 @@ func createVolume(ctx context.Context, logger *zap.Logger, devicePath string, op
 		logger.Info("Zeroing first 16MB of crypto device so it will be detected as empty",
 			zap.String("device", cryptoDevicePath))
 
-		err = execCommand(ctx, nil, "/usr/bin/dd", "if=/dev/zero", "of="+cryptoDevicePath, "bs=1M", "count=16")
+		err = execCommand(ctx, 10*time.Second, "/usr/bin/dd", "if=/dev/zero", "of="+cryptoDevicePath, "bs=1M", "count=16")
 		if err != nil {
 			return fmt.Errorf("could not wipe crypto device: %w", err)
 		}
@@ -262,7 +282,7 @@ func createVolume(ctx context.Context, logger *zap.Logger, devicePath string, op
 	logger.Info("Creating physical volume",
 		zap.String("device", devicePath))
 
-	err := execCommand(ctx, nil, "/sbin/pvcreate", "-v", devicePath)
+	err := execCommand(ctx, 10*time.Second, "/sbin/pvcreate", "-v", devicePath)
 	if err != nil {
 		return fmt.Errorf("failed to create physical volume: %w", err)
 	}
@@ -270,7 +290,7 @@ func createVolume(ctx context.Context, logger *zap.Logger, devicePath string, op
 	logger.Info("Creating volume group",
 		zap.String("device", devicePath))
 
-	err = execCommand(ctx, nil, "/sbin/vgcreate", "-v", opts.VolumeGroup, devicePath)
+	err = execCommand(ctx, 10*time.Second, "/sbin/vgcreate", "-v", opts.VolumeGroup, devicePath)
 	if err != nil {
 		return fmt.Errorf("failed to create volume group: %w", err)
 	}
@@ -278,17 +298,19 @@ func createVolume(ctx context.Context, logger *zap.Logger, devicePath string, op
 	if opts.LogicalVolume != "" {
 		logger.Info("Creating logical volume")
 
-		err := execCommand(ctx, nil, "/sbin/lvcreate", "-v", "-an", "-n", opts.LogicalVolume, "-l", "100%FREE", opts.VolumeGroup)
+		err := execCommand(ctx, 10*time.Second, "/sbin/lvcreate", "-v", "-an", "-n", opts.LogicalVolume, "-l", "100%FREE", opts.VolumeGroup)
 		if err != nil {
 			return fmt.Errorf("failed to create logical volume: %w", err)
 		}
 	}
 
-	if opts.EncryptionPassphrase != "" {
+	if opts.EncryptionKeyFilePath != "" {
+		cryptoDevicePath := "/dev/mapper/crypto_" + lvmEscape(opts.VolumeGroup)
+
 		logger.Info("Closing luks volume",
 			zap.String("device", devicePath))
 
-		err := execCommand(ctx, nil, "/sbin/cryptsetup", "close", filepath.Base(devicePath))
+		err := execCommand(ctx, time.Minute, "/sbin/cryptsetup", "close", "--debug", filepath.Base(cryptoDevicePath))
 		if err != nil {
 			return fmt.Errorf("could not close luks volume: %w", err)
 		}
@@ -303,20 +325,20 @@ func activateVolume(ctx context.Context, logger *zap.Logger, devicePath string, 
 		logger.Info("Cleaning up existing devmapper device",
 			zap.String("device", devMapperDevicePath))
 
-		err := execCommand(ctx, nil, "/usr/sbin/dmsetup", "remove", "-v", lvmName(opts))
+		err := execCommand(ctx, 10*time.Second, "/usr/sbin/dmsetup", "remove", "-v", lvmName(opts))
 		if err != nil {
 			return fmt.Errorf("could not reset devmapper device: %w", err)
 		}
 	}
 
-	if opts.EncryptionPassphrase != "" {
+	if opts.EncryptionKeyFilePath != "" {
 		cryptoDevicePath := "/dev/mapper/crypto_" + lvmEscape(opts.VolumeGroup)
 
 		if _, err := os.Stat(cryptoDevicePath); err == nil {
 			logger.Info("Cleaning up existing crypto devmapper device",
 				zap.String("device", cryptoDevicePath))
 
-			err := execCommand(ctx, nil, "/usr/sbin/dmsetup", "remove", "-v", filepath.Base(cryptoDevicePath))
+			err := execCommand(ctx, 10*time.Second, "/usr/sbin/dmsetup", "remove", "-v", filepath.Base(cryptoDevicePath))
 			if err != nil {
 				return fmt.Errorf("could not reset devmapper device: %w", err)
 			}
@@ -326,8 +348,8 @@ func activateVolume(ctx context.Context, logger *zap.Logger, devicePath string, 
 			zap.String("device", devicePath),
 			zap.String("cryptoDevice", cryptoDevicePath))
 
-		in := strings.NewReader(opts.EncryptionPassphrase + "\n")
-		err := execCommand(ctx, in, "/sbin/cryptsetup", "open", "--type", "luks2", devicePath, filepath.Base(cryptoDevicePath))
+		err := execCommand(ctx, time.Minute, "/sbin/cryptsetup", "open", "--debug", "--type", "luks2",
+			"--key-file", opts.EncryptionKeyFilePath, devicePath, filepath.Base(cryptoDevicePath))
 		if err != nil {
 			return fmt.Errorf("could not open luks volume: %w", err)
 		}
@@ -335,7 +357,7 @@ func activateVolume(ctx context.Context, logger *zap.Logger, devicePath string, 
 
 	logger.Info("Activating volume group")
 
-	err := execCommand(ctx, nil, "/sbin/lvchange", "-v", "-ay", opts.VolumeGroup)
+	err := execCommand(ctx, 10*time.Second, "/sbin/lvchange", "-v", "-ay", opts.VolumeGroup)
 	if err != nil {
 		return fmt.Errorf("failed to activate volume group: %w", err)
 	}
@@ -346,18 +368,18 @@ func activateVolume(ctx context.Context, logger *zap.Logger, devicePath string, 
 func deactivateVolume(ctx context.Context, logger *zap.Logger, opts *AttachOptions) error {
 	logger.Info("Deactivating volume group")
 
-	err := execCommand(ctx, nil, "/sbin/lvchange", "-v", "-an", opts.VolumeGroup)
+	err := execCommand(ctx, 10*time.Second, "/sbin/lvchange", "-v", "-an", opts.VolumeGroup)
 	if err != nil {
 		return fmt.Errorf("failed to deactivate volume group: %w", err)
 	}
 
-	if opts.EncryptionPassphrase != "" {
+	if opts.EncryptionKeyFilePath != "" {
 		cryptoDevicePath := "/dev/mapper/crypto_" + lvmEscape(opts.VolumeGroup)
 
 		logger.Info("Closing luks volume",
 			zap.String("device", cryptoDevicePath))
 
-		err := execCommand(ctx, nil, "/sbin/cryptsetup", "close", filepath.Base(cryptoDevicePath))
+		err := execCommand(ctx, 10*time.Second, "/sbin/cryptsetup", "close", "--debug", filepath.Base(cryptoDevicePath))
 		if err != nil {
 			return fmt.Errorf("could not close luks volume: %w", err)
 		}
@@ -380,14 +402,11 @@ func blockDeviceSize(devicePath string) (int64, error) {
 	return size, nil
 }
 
-func execCommand(ctx context.Context, in io.Reader, name string, arg ...string) error {
-	cmdCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+func execCommand(ctx context.Context, timeout time.Duration, name string, arg ...string) error {
+	cmdCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(cmdCtx, name, arg...)
-	cmd.Env = os.Environ()
-
-	cmd.Stdin = in
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 

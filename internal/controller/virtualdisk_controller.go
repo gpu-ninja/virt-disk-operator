@@ -19,6 +19,7 @@ package controller
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -26,6 +27,7 @@ import (
 
 	"go.uber.org/zap"
 	"k8s.io/apimachinery/pkg/api/errors"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -47,8 +49,8 @@ import (
 // Allow recording of events.
 // +kubebuilder:rbac:groups="",resources=events,verbs=get;list;watch;create;update;patch
 
-// Need to be able to read secrets to get encryption passphrases etc.
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// Need to be able to read/write secrets (for encryption keys).
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch
 
 // Need to be able to get pods (primarily for determining the image to use).
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
@@ -123,28 +125,6 @@ func (r *VirtualDiskReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, nil
 	}
 
-	ok, err := vdisk.ResolveReferences(ctx, r.Client, r.Scheme)
-	if !ok && err == nil {
-		logger.Info("Not all references are resolvable, requeuing")
-
-		r.Recorder.Event(&vdisk, corev1.EventTypeWarning,
-			"NotReady", "Not all references are resolvable")
-
-		if err := r.markPending(ctx, &vdisk); err != nil {
-			return ctrl.Result{}, err
-		}
-
-		return ctrl.Result{RequeueAfter: reconcileRetryInterval}, nil
-	} else if err != nil {
-		r.Recorder.Eventf(&vdisk, corev1.EventTypeWarning,
-			"Failed", "Failed to resolve references: %s", err)
-
-		r.markFailed(ctx, &vdisk,
-			fmt.Errorf("failed to resolve references: %w", err))
-
-		return ctrl.Result{}, fmt.Errorf("failed to resolve references: %w", err)
-	}
-
 	logger.Info("Creating or updating")
 
 	image, err := r.getOperatorImage(ctx)
@@ -156,7 +136,7 @@ func (r *VirtualDiskReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	logger.Info("Reconciling daemonset")
 
-	ds, err := r.daemonSetTemplate(&vdisk, image)
+	ds, err := r.daemonSetTemplate(ctx, logger, &vdisk, image)
 	if err != nil {
 		r.Recorder.Eventf(&vdisk, corev1.EventTypeWarning,
 			"Failed", "Failed to generate daemonset template: %s", err)
@@ -323,7 +303,92 @@ func (r *VirtualDiskReconciler) getOperatorImage(ctx context.Context) (string, e
 	return pod.Spec.Containers[0].Image, nil
 }
 
-func (r *VirtualDiskReconciler) daemonSetTemplate(vdisk *virtdiskv1alpha1.VirtualDisk, image string) (*appsv1.DaemonSet, error) {
+func (r *VirtualDiskReconciler) daemonSetTemplate(ctx context.Context, logger *zap.Logger, vdisk *virtdiskv1alpha1.VirtualDisk, image string) (*appsv1.DaemonSet, error) {
+	volumes := []corev1.Volume{{
+		Name: "dev",
+		VolumeSource: corev1.VolumeSource{
+			HostPath: &corev1.HostPathVolumeSource{
+				Path: "/dev",
+				Type: ptr.To(corev1.HostPathDirectory),
+			},
+		},
+	}, {
+		Name: "modules",
+		VolumeSource: corev1.VolumeSource{
+			HostPath: &corev1.HostPathVolumeSource{
+				Path: "/lib/modules",
+				Type: ptr.To(corev1.HostPathDirectory),
+			},
+		},
+	}, {
+		Name: "udev",
+		VolumeSource: corev1.VolumeSource{
+			HostPath: &corev1.HostPathVolumeSource{
+				Path: "/run/udev",
+				Type: ptr.To(corev1.HostPathDirectory),
+			},
+		},
+	}, {
+		Name: "data",
+		VolumeSource: corev1.VolumeSource{
+			HostPath: &corev1.HostPathVolumeSource{
+				Path: vdisk.Spec.HostPath,
+				Type: ptr.To(corev1.HostPathDirectoryOrCreate),
+			},
+		},
+	}, {
+		Name: "lvmrundir",
+		VolumeSource: corev1.VolumeSource{
+			HostPath: &corev1.HostPathVolumeSource{
+				Path: "/run/lvm",
+				Type: ptr.To(corev1.HostPathDirectoryOrCreate),
+			},
+		},
+	}, {
+		Name: "lvmlockdir",
+		VolumeSource: corev1.VolumeSource{
+			HostPath: &corev1.HostPathVolumeSource{
+				Path: "/run/lock/lvm",
+				Type: ptr.To(corev1.HostPathDirectoryOrCreate),
+			},
+		},
+	}, {
+		Name: "cryptsetuplockdir",
+		VolumeSource: corev1.VolumeSource{
+			HostPath: &corev1.HostPathVolumeSource{
+				Path: "/run/cryptsetup",
+				Type: ptr.To(corev1.HostPathDirectoryOrCreate),
+			},
+		},
+	}}
+
+	volumeMounts := []corev1.VolumeMount{
+		{
+			Name:      "data",
+			MountPath: vdisk.Spec.HostPath,
+		},
+		{
+			Name:      "dev",
+			MountPath: "/dev",
+		}, {
+			Name:      "udev",
+			MountPath: "/run/udev",
+		}, {
+			Name:      "lvmrundir",
+			MountPath: "/run/lvm",
+		}, {
+			Name:      "lvmlockdir",
+			MountPath: "/run/lock/lvm",
+		}, {
+			Name:      "cryptsetuplockdir",
+			MountPath: "/run/cryptsetup",
+		}, {
+			Name:      "modules",
+			MountPath: "/lib/modules",
+			ReadOnly:  true,
+		},
+	}
+
 	initContainers := []corev1.Container{{
 		Name:    "load-nbd-module",
 		Image:   image,
@@ -342,14 +407,7 @@ done
 		SecurityContext: &corev1.SecurityContext{
 			Privileged: ptr.To(true),
 		},
-		VolumeMounts: []corev1.VolumeMount{{
-			Name:      "modules",
-			MountPath: "/lib/modules",
-			ReadOnly:  true,
-		}, {
-			Name:      "dev",
-			MountPath: "/dev",
-		}},
+		VolumeMounts: volumeMounts,
 	}}
 
 	args := []string{
@@ -363,18 +421,61 @@ done
 		args = append(args, "--lv-name="+vdisk.Spec.LogicalVolume)
 	}
 
-	var env []corev1.EnvVar
-	if vdisk.Spec.EncryptionPassphraseSecretRef != nil {
-		env = append(env, corev1.EnvVar{
-			Name: "VIRT_DISK_PASSPHRASE",
-			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					Key: vdisk.Spec.EncryptionPassphraseSecretRef.Key,
-					LocalObjectReference: corev1.LocalObjectReference{
-						Name: vdisk.Spec.EncryptionPassphraseSecretRef.Name,
-					},
+	if vdisk.Spec.Encryption {
+		logger.Info("Checking for existing encryption key")
+
+		encryptionKeySecret := corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      vdisk.Spec.EncryptionKeySecretName,
+				Namespace: vdisk.Namespace,
+			},
+		}
+
+		if err := r.Get(ctx, client.ObjectKeyFromObject(&encryptionKeySecret), &encryptionKeySecret); err != nil {
+			if !apierrors.IsNotFound(err) {
+				return nil, fmt.Errorf("failed to check for existing encryption key: %w", err)
+			}
+
+			logger.Info("Generating new encryption key")
+
+			keyData := make([]byte, 64)
+			n, err := rand.Read(keyData)
+			if err != nil || n != 64 {
+				return nil, fmt.Errorf("failed to generate encryption key: %w", err)
+			}
+
+			encryptionKeySecret.Data = map[string][]byte{
+				"key": keyData,
+			}
+
+			if err := controllerutil.SetControllerReference(vdisk, &encryptionKeySecret, r.Scheme); err != nil {
+				return nil, fmt.Errorf("failed to set controller reference: %w", err)
+			}
+
+			logger.Info("Creating encryption key secret")
+
+			if err := r.Create(ctx, &encryptionKeySecret); err != nil {
+				return nil, fmt.Errorf("failed to create encryption key secret: %w", err)
+			}
+		} else {
+			logger.Info("Using existing encryption key")
+		}
+
+		args = append(args, "--key-file=/run/secrets/virt-disk-encryption-key/key")
+
+		volumes = append(volumes, corev1.Volume{
+			Name: "encryption-key",
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: encryptionKeySecret.Name,
 				},
 			},
+		})
+
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      "encryption-key",
+			MountPath: "/run/secrets/virt-disk-encryption-key",
+			ReadOnly:  true,
 		})
 	}
 
@@ -382,26 +483,10 @@ done
 		Name:  "virt-disk",
 		Image: image,
 		Args:  args,
-		Env:   env,
 		SecurityContext: &corev1.SecurityContext{
 			Privileged: ptr.To(true),
 		},
-		VolumeMounts: []corev1.VolumeMount{{
-			Name:      "data",
-			MountPath: vdisk.Spec.HostPath,
-		}, {
-			Name:      "dev",
-			MountPath: "/dev",
-		}, {
-			Name:      "udev",
-			MountPath: "/run/udev",
-		}, {
-			Name:      "lvmrundir",
-			MountPath: "/run/lvm",
-		}, {
-			Name:      "lvmlockdir",
-			MountPath: "/run/lock/lvm",
-		}},
+		VolumeMounts: volumeMounts,
 		ReadinessProbe: &corev1.Probe{
 			ProbeHandler: corev1.ProbeHandler{
 				HTTPGet: &corev1.HTTPGetAction{
@@ -443,55 +528,7 @@ done
 					NodeSelector:                  vdisk.Spec.NodeSelector,
 					InitContainers:                initContainers,
 					Containers:                    []corev1.Container{virtDiskContainer},
-					Volumes: []corev1.Volume{{
-						Name: "dev",
-						VolumeSource: corev1.VolumeSource{
-							HostPath: &corev1.HostPathVolumeSource{
-								Path: "/dev",
-								Type: ptr.To(corev1.HostPathDirectory),
-							},
-						},
-					}, {
-						Name: "modules",
-						VolumeSource: corev1.VolumeSource{
-							HostPath: &corev1.HostPathVolumeSource{
-								Path: "/lib/modules",
-								Type: ptr.To(corev1.HostPathDirectory),
-							},
-						},
-					}, {
-						Name: "udev",
-						VolumeSource: corev1.VolumeSource{
-							HostPath: &corev1.HostPathVolumeSource{
-								Path: "/run/udev",
-								Type: ptr.To(corev1.HostPathDirectory),
-							},
-						},
-					}, {
-						Name: "data",
-						VolumeSource: corev1.VolumeSource{
-							HostPath: &corev1.HostPathVolumeSource{
-								Path: vdisk.Spec.HostPath,
-								Type: ptr.To(corev1.HostPathDirectoryOrCreate),
-							},
-						},
-					}, {
-						Name: "lvmrundir",
-						VolumeSource: corev1.VolumeSource{
-							HostPath: &corev1.HostPathVolumeSource{
-								Path: "/run/lvm",
-								Type: ptr.To(corev1.HostPathDirectoryOrCreate),
-							},
-						},
-					}, {
-						Name: "lvmlockdir",
-						VolumeSource: corev1.VolumeSource{
-							HostPath: &corev1.HostPathVolumeSource{
-								Path: "/run/lock/lvm",
-								Type: ptr.To(corev1.HostPathDirectoryOrCreate),
-							},
-						},
-					}},
+					Volumes:                       volumes,
 				},
 			},
 		},

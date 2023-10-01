@@ -113,11 +113,8 @@ func main() {
 						Usage: "Name of the optional logical volume to create.",
 					},
 					&cli.StringFlag{
-						Name:  "passphrase",
-						Usage: "Optional LUKS encryption passphrase.",
-						EnvVars: []string{
-							"VIRT_DISK_PASSPHRASE",
-						},
+						Name:  "key-file",
+						Usage: "Path to the encryption key file.",
 					},
 				},
 				Before: createLogger,
@@ -205,11 +202,11 @@ func attachVirtualDisk(cCtx *cli.Context) error {
 	}
 
 	opts := &disk.AttachOptions{
-		Image:                cCtx.String("image"),
-		Size:                 sizeBytes,
-		VolumeGroup:          cCtx.String("vg-name"),
-		LogicalVolume:        cCtx.String("lv-name"),
-		EncryptionPassphrase: cCtx.String("passphrase"),
+		Image:                 cCtx.String("image"),
+		Size:                  sizeBytes,
+		VolumeGroup:           cCtx.String("vg-name"),
+		LogicalVolume:         cCtx.String("lv-name"),
+		EncryptionKeyFilePath: cCtx.String("key-file"),
 	}
 
 	readyCh := make(chan struct{}, 1)

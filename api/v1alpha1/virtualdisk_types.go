@@ -18,15 +18,9 @@
 package v1alpha1
 
 import (
-	"context"
-	"fmt"
-
-	"github.com/gpu-ninja/operator-utils/reference"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	runtime "k8s.io/apimachinery/pkg/runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 type VirtualDiskPhase string
@@ -56,9 +50,10 @@ type VirtualDiskSpec struct {
 	// LogicalVolume is the name of the optional LVM logical volume to create.
 	// It will be allocated to use all available space in the volume group.
 	LogicalVolume string `json:"logicalVolume,omitempty"`
-	// EncryptionPassphraseSecretRef is the optional reference to a secret containing a LUKS encryption passphrase.
-	// If specified, the virtual disk device will be encrypted using LUKS.
-	EncryptionPassphraseSecretRef *reference.LocalKeyedSecretReference `json:"encryptionPassphraseSecretRef,omitempty"`
+	// Encryption is a flag indicating whether the virtual disk device should be encrypted using LUKS.
+	Encryption bool `json:"encryption,omitempty"`
+	// EncryptionKeySecretName is the name of the secret that will be created to store the LUKS encryption key.
+	EncryptionKeySecretName string `json:"encryptionKeySecretName,omitempty"`
 	// NodeSelector allows specifying which nodes a virtual disk device should be created on.
 	// If not specified, the virtual disk device will be created on all nodes.
 	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
@@ -93,22 +88,6 @@ type VirtualDiskList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []VirtualDisk `json:"items"`
-}
-
-func (vdisk *VirtualDisk) ResolveReferences(ctx context.Context, reader client.Reader, scheme *runtime.Scheme) (bool, error) {
-	if vdisk.Spec.EncryptionPassphraseSecretRef != nil {
-		encryptionPassphraseSecret, ok, err := vdisk.Spec.EncryptionPassphraseSecretRef.Resolve(ctx, reader, scheme, vdisk)
-		if !ok || err != nil {
-			return ok, err
-		}
-
-		if _, ok := encryptionPassphraseSecret.(*corev1.Secret).Data[vdisk.Spec.EncryptionPassphraseSecretRef.Key]; !ok {
-			return false, fmt.Errorf("encryption passphrase secret does not contain key %q", vdisk.Spec.EncryptionPassphraseSecretRef.Key)
-		}
-
-	}
-
-	return true, nil
 }
 
 func init() {

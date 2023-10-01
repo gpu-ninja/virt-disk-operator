@@ -22,6 +22,7 @@ package virtualdisk_test
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -117,14 +118,17 @@ func TestAttach(t *testing.T) {
 
 		imagePath := filepath.Join(t.TempDir(), "image.qcow2")
 
+		keyFilePath, err := generateEncryptionKey(t)
+		require.NoError(t, err)
+
 		opts := virtualdisk.AttachOptions{
-			Image:                imagePath,
-			Size:                 64 * units.MB,
-			VolumeGroup:          id + "_vg",
-			LogicalVolume:        id + "_lv",
-			EncryptionPassphrase: "correct horse battery staple",
-			PIDFilePath:          filepath.Join("/run/qemu-nbd", id+".pid"),
-			SocketPath:           filepath.Join("/run/qemu-nbd", id+".sock"),
+			Image:                 imagePath,
+			Size:                  64 * units.MB,
+			VolumeGroup:           id + "_vg",
+			LogicalVolume:         id + "_lv",
+			EncryptionKeyFilePath: keyFilePath,
+			PIDFilePath:           filepath.Join("/run/qemu-nbd", id+".pid"),
+			SocketPath:            filepath.Join("/run/qemu-nbd", id+".sock"),
 		}
 
 		ctx, cancel := context.WithCancel(parentCtx)
@@ -267,13 +271,17 @@ func TestAttach(t *testing.T) {
 
 		imagePath := filepath.Join(t.TempDir(), "image.qcow2")
 
+		keyFilePath, err := generateEncryptionKey(t)
+		require.NoError(t, err)
+
 		opts := virtualdisk.AttachOptions{
-			Image:         imagePath,
-			Size:          64 * units.MB,
-			VolumeGroup:   id + "_vg",
-			LogicalVolume: id + "_lv",
-			PIDFilePath:   filepath.Join("/run/qemu-nbd", id+".pid"),
-			SocketPath:    filepath.Join("/run/qemu-nbd", id+".sock"),
+			Image:                 imagePath,
+			Size:                  64 * units.MB,
+			VolumeGroup:           id + "_vg",
+			LogicalVolume:         id + "_lv",
+			EncryptionKeyFilePath: keyFilePath,
+			PIDFilePath:           filepath.Join("/run/qemu-nbd", id+".pid"),
+			SocketPath:            filepath.Join("/run/qemu-nbd", id+".sock"),
 		}
 
 		ctx, cancel := context.WithCancel(parentCtx)
@@ -352,4 +360,21 @@ func TestAttach(t *testing.T) {
 
 		assert.NotZero(t, size)
 	})
+}
+
+func generateEncryptionKey(t *testing.T) (string, error) {
+	keyData := make([]byte, 64)
+	n, err := rand.Read(keyData)
+	if err != nil || n != 64 {
+		return "", fmt.Errorf("failed to generate encryption key: %w", err)
+	}
+
+	keyFilePath := filepath.Join(t.TempDir(), "key")
+
+	err = os.WriteFile(keyFilePath, keyData, 0o600)
+	if err != nil {
+		return "", fmt.Errorf("failed to write encryption key to file: %w", err)
+	}
+
+	return keyFilePath, nil
 }

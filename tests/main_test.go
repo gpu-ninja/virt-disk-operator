@@ -123,6 +123,16 @@ func TestOperator(t *testing.T) {
 
 	t.Log("Deleting virtual disk")
 
+	// Remove owner references so that the secret will still exist after the virtual disk is deleted.
+	encryptionKeySecret, err := clientset.CoreV1().Secrets("default").Get(ctx, "demo-key", metav1.GetOptions{})
+	require.NoError(t, err)
+
+	encryptionKeySecret.OwnerReferences = nil
+	encryptionKeySecret.ResourceVersion = ""
+
+	_, err = clientset.CoreV1().Secrets("default").Update(ctx, encryptionKeySecret, metav1.UpdateOptions{})
+	require.NoError(t, err)
+
 	err = dynClient.Resource(diskGVR).Namespace("default").Delete(ctx, "demo", metav1.DeleteOptions{})
 	require.NoError(t, err)
 
